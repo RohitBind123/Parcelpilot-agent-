@@ -1,0 +1,35 @@
+# ParcelPilot AI Support System — direct dependencies
+# Pinned to the versions the committed index and .db were built against.
+# See ARCHITECTURE.md §2 for why each of these was chosen.
+
+# --- Agent orchestration (D1: LangGraph for interrupt() + checkpointer) ---
+langgraph==1.2.11
+langchain-core==1.6.0
+
+# --- Retrieval (D3: Chroma for pre-filtered vector search; D4: hybrid BM25 + dense) ---
+chromadb==1.5.9
+rank-bm25==0.2.2
+
+# --- Build-time ingestion (PDF -> chunks, xlsx -> SQLite) ---
+pypdf==6.16.1
+openpyxl==3.1.5
+pandas==3.0.5
+
+# --- Model layer (D9: OpenRouter via OpenAI-compatible client) ---
+openai==3.3.1
+httpx==0.28.1
+tenacity==9.1.4
+
+# --- Interface ---
+streamlit==1.62.0
+
+# --- Config / validation ---
+pydantic==2.13.4
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+PyYAML==6.0.3
+
+# --- Dev / test ---
+pytest==9.1.1
+pytest-cov==7.1.0
+ruff==0.16.4

@@ -1,6 +1,7 @@
 # Secrets — never commit
 .env
-.env.local
+.env.*
+!.env.example
 *.pem
 *.key
 
@@ -45,3 +46,6 @@ Thumbs.db
 # Notes:
 #   data/index/ and data/parcelpilot.db are COMMITTED on purpose (see ARCHITECTURE.md D10)
 #   so the hosted app never embeds or parses at runtime.
+
+# CalQuity-supplied hiring material — keep local, do not publish
+project_docs/*.docx
