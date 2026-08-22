@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.datastore.etl import WORKBOOK_PATH, EtlError, build_database
+from src.knowledge.ingest import IngestError, build_registry
 
 TABLES = ("accounts", "orders", "tickets")
 
@@ -30,7 +31,10 @@ def main() -> int:
 
     try:
         path = build_database(args.workbook, args.target)
-    except EtlError as exc:
+        # The registry lands in the same file: the resolver needs the workbook
+        # and the clauses in one query.
+        clause_count = build_registry(path)
+    except (EtlError, IngestError) as exc:
         print(f"build failed: {exc}")
         return 1
 
@@ -42,7 +46,7 @@ def main() -> int:
         conn.close()
 
     print(f"built {path}")
-    print("  " + "  ".join(f"{t}={n}" for t, n in counts.items()))
+    print("  " + "  ".join(f"{t}={n}" for t, n in counts.items()) + f"  clauses={clause_count}")
     print(f"  as_of={as_of}  (set AS_OF in .env to this value)")
     return 0
 
