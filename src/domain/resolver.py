@@ -67,12 +67,20 @@ GENERAL_POLICY: Final = _GeneralPolicy()
 #: Two clauses differing only in these are not in conflict about anything.
 _RELATIONAL_KEYS: Final[frozenset[str]] = frozenset({"overrides", "waivable_by_agreement"})
 
+#: The topic under which a known issue is itself the subject rather than a
+#: qualification of someone else's rule.
+KNOWN_ISSUE_TOPIC: Final = "known_issue"
+
 _QUERY: Final = """
     SELECT DISTINCT
         cl.clause_id, cl.doc_id, cl.doc_title, cl.clause_ref, cl.title,
         cl.tier, cl.account_id, cl.status,
         cl.effective_from, cl.effective_to, cl.superseded_by,
-        cl.params, cl.text
+        cl.params, cl.text,
+        EXISTS (
+            SELECT 1 FROM clause_topics k
+            WHERE k.clause_id = cl.clause_id AND k.topic = :known_issue
+        ) AS is_known_issue
     FROM clauses cl
     JOIN clause_topics t ON t.clause_id = cl.clause_id
     WHERE t.topic = :topic
@@ -99,6 +107,9 @@ class ClauseRef:
     status: str
     params: Mapping[str, Any] = field(default_factory=dict)
     text: str = ""
+    #: Tagged `known_issue`. A defect report describes a deviation from a rule
+    #: and is never the rule; see `_states_the_rule`.
+    is_known_issue: bool = False
     #: Why this clause is in the bucket it is in. Set on exclusions.
     reason: str | None = None
 
@@ -108,12 +119,25 @@ class ClauseRef:
 
     @property
     def states_a_rule(self) -> bool:
-        """Whether the clause carries a value, as opposed to prose about the topic.
+        """Whether the clause is an authority on its topic, or only speaks about it.
+
+        Two ways to be on a topic without being its rule.
 
         A clause whose only params are relational says nothing that could
         conflict with another clause. Policy v3 section 1 is on the
         `first_response_target` topic and states no target.
+
+        And a known issue reports a defect - a departure from the rule that is
+        expected to be repaired - so it can qualify an answer but never be its
+        basis. KI-208 says as much itself: uploads above roughly 3,000 rows fail
+        intermittently "even though the supported product limit remains 5,000
+        rows". Treating it as a rival authority on `bulk_upload_limit` handed
+        the topic to whichever clause id sorted first, which was the defect
+        report, and turned an open bug into a contractual entitlement. It stays
+        reachable as a supporting clause, which is where an answer wants it.
         """
+        if self.is_known_issue:
+            return False
         return any(key not in _RELATIONAL_KEYS for key in self.params)
 
     @property
@@ -269,7 +293,9 @@ class PolicyResolver:
         now = (moment or as_of()).date()
         tiers = frozenset(include_tiers)
 
-        rows = self.connection.execute(_QUERY, {"topic": topic, "account": scope}).fetchall()
+        rows = self.connection.execute(
+            _QUERY, {"topic": topic, "account": scope, "known_issue": KNOWN_ISSUE_TOPIC}
+        ).fetchall()
         candidates, excluded = [], []
         for row in rows:
             ref = _to_ref(row)
@@ -370,12 +396,17 @@ def _decide(
 def _conflict(tier: int, group: list[ClauseRef]) -> UnresolvedConflict | None:
     if len(group) < 2:
         return None
+    # Only keys that *every* clause in the group states can disagree. A clause
+    # silent on a key is not asserting a different value for it; it is asserting
+    # nothing, and `params.get(key)` returning None made silence look like
+    # dissent. That is the missing-data-is-not-zero rule arriving in the
+    # precedence layer, and it left `bulk_upload_limit` with no governing clause
+    # at all - from a corpus that states the limit in plain words.
+    shared = {k for k in group[0].params if k not in _RELATIONAL_KEYS}
+    for clause in group[1:]:
+        shared &= set(clause.params)
     differing = sorted(
-        {
-            key
-            for key in {k for c in group for k in c.params if k not in _RELATIONAL_KEYS}
-            if len({json.dumps(c.params.get(key), sort_keys=True) for c in group}) > 1
-        }
+        key for key in shared if len({json.dumps(c.params[key], sort_keys=True) for c in group}) > 1
     )
     if not differing:
         return None
@@ -401,6 +432,7 @@ def _to_ref(row: sqlite3.Row) -> ClauseRef:
         status=row["status"],
         params=json.loads(row["params"] or "{}"),
         text=row["text"],
+        is_known_issue=bool(row["is_known_issue"]),
     )
 
 
