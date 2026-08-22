@@ -53,7 +53,7 @@ Decisions carried forward from v1.1 keep their original numbers. Reversals and n
 | D7 | Deterministic calculators as tools | A confidently wrong fee is the exact failure the brief warns about. | LLM arithmetic |
 | D8 | Deterministic precedence resolver | Auditable and testable. Rules come from the corpus itself. | LLM-judged precedence |
 | ~~D9~~ | ~~OpenRouter primary~~ | **Reversed → D9a** | |
-| **D9a** | **Gemini primary, OpenRouter fully implemented and switchable** | OpenRouter account holds $0 credits and its `:free` slugs are actively being delisted (one dead slug found in a single afternoon). Both providers speak the OpenAI wire format, so the abstraction costs three settings, not a framework. | Single-provider lock-in |
+| **D9a** | **Gemini for dev and demo; OpenRouter implemented, switchable, unfunded** | OpenRouter holds $0 credits and its `:free` slugs are actively being delisted (one dead slug found in a single afternoon). It stays fully implemented and unit-tested against a recorded/mocked client, switchable by one env var, but the demo never depends on it. Both providers speak the OpenAI wire format, so the abstraction costs three settings, not a framework. | Funding OpenRouter; single-provider lock-in |
 | D10 | Build-time indexing, never at runtime | Reproducible, fast cold start, no rate-limit exposure on the hot path. | Index on startup |
 | ~~D11~~ | ~~Classify-then-route with scripted pipelines~~ | **Reversed → D11a** | |
 | **D11a** | **Pure tool-calling agent — the model plans every turn** | Scripted pipelines encode our guess at the query distribution and read as hard-coding to a reviewer. Reliability is bought back by D13a (typed handles) and D15a (fact block), which constrain *outcomes* rather than *orchestration*. | Scripted pipelines; deterministic-only routing |
@@ -69,6 +69,11 @@ Decisions carried forward from v1.1 keep their original numbers. Reversals and n
 | **D21** | **Three-layer evaluation: pytest invariants, exact-answer golden set, RAGAS** | RAGAS is LLM-judged and cannot express "cross-account query denied" or "fee == INR 0". Each layer catches what the others cannot. | RAGAS alone |
 | **D22** | **Business hours = Mon-Fri 09:00-18:00 IST, surfaced in every answer that uses it** | The pack never defines it and the snapshot is a Sunday. Making the assumption visible turns our sharpest finding into a feature. | Calendar hours (contradicts LumenWorks' weekend clause) |
 | **D23** | **Severity: deterministic guards for the two P1 triggers named in Policy v3 §2, LLM for the rest** | "Complete production outage preventing all shipment creation" and "suspected credential exposure" are enumerated verbatim in §2, so they must never be downgraded by a sampled token. Everything else is genuine judgment and returns the matched definition span plus a confidence. | Keyword table only (brittle); LLM only (a security P1 could be graded down) |
+| **D24** | **Extraction pipeline plus a hand-reviewed committed baseline, with a drift test** | Ingest genuinely parses the PDFs into typed `params`; `clause_params_baseline.yaml` is reviewed once and committed; a unit test fails if extraction ever diverges from it. Real pipeline for the architecture story, verified data for correctness, and CI catches re-ingest drift instead of a user. | Hand-writing params (weaker story, does not survive a 7th PDF); extraction trusted on calculator tests alone (leaves caps, thresholds and dates unverified) |
+| **D25** | **Low-confidence severity resolves asymmetrically by surface** | Costs are asymmetric. In ops triage an over-prioritised ticket costs an analyst two minutes, so fail toward the more severe class and label it inferred. In a customer-facing answer, quoting an unsure target is a promise ParcelPilot may not keep, so declare severity undetermined and escalate. | One uniform rule in either direction |
+| **D26** | **Three roles, separated by capability rather than by the unreachable approval clause** | `scan_support_health`, `explain_finding` and credit approval above INR 1,000 are `ops_manager` only; `support_agent` additionally gets `my_queue` driven by the previously unused `assigned_to` column. All three projections differ visibly on real rows. The SOP §3 approval gate is implemented and unit-tested but cannot fire on this data — individual credits cap at INR 500 — and the writeup says so. | Two roles (leaves the SOP clause inert); agents scoped strictly to their own queue (visible but wrong as a product decision) |
+| **D27** | **Escalation is a drafted record through the same confirmation gate** | The agent composes severity, account, evidence chain and specifically *what it could not determine*, then asks for confirmation. Reuses `prepare_action`/`execute_action`, so escalation, detection and action share one mechanism and one audit trail. | A message with no record (nothing auditable); auto-create without confirmation (contradicts brief requirement 4) |
+| **D28** | **The golden set is reviewed and signed off before any test depends on it** | Its expected answers were derived by reading clauses. A misreading shared between the golden set and the implementation is invisible — both agree and both are wrong. Review is cheap because findings §10 already shows the arithmetic. | Codify and revisit on failure |
 
 ---
 
@@ -129,9 +134,20 @@ class Principal:
 Created at login from a fixed persona table, immutable for the session, **never a model-supplied
 argument and never a client-supplied field**.
 
-Seeded personas: a Northstar customer (ACCT-001), a LumenWorks customer (ACCT-002), a Beacon Retail
-customer (ACCT-003), a support agent, and an ops manager. The Northstar/LumenWorks pair exists so the
-ORD-1001 vs ORD-2001 divergence can be demonstrated in two clicks.
+Seeded personas:
+
+| Persona | Role | Scope |
+|---|---|---|
+| Northstar customer | `customer` | ACCT-001 |
+| LumenWorks customer | `customer` | ACCT-002 |
+| Beacon Retail customer | `customer` | ACCT-003 |
+| Maya | `support_agent` | all accounts; `my_queue` = TKT-502, TKT-504, TKT-450 |
+| Rohit | `support_agent` | all accounts; `my_queue` = TKT-501, TKT-503, TKT-505, TKT-451 |
+| Priya Mehta | `ops_manager` | all accounts, all tickets, ops dashboard, credit approval |
+
+The Northstar/LumenWorks pair exists so the ORD-1001 vs ORD-2001 divergence can be demonstrated in
+two clicks. Maya and Rohit exist so `my_queue` splits real rows. Priya is the CSM named in both the
+`accounts` sheet and the Northstar agreement §4.
 
 ### 4.2 Session tokens (D17)
 
@@ -162,6 +178,24 @@ def bind_staff_tools(p: Principal):
 
 The customer-side model has **no vocabulary** for a cross-account query. This is why a single agent
 is safe: the projection, not the persona, enforces the boundary.
+
+### Projection matrix (D26)
+
+| Tool | customer | support_agent | ops_manager |
+|---|---|---|---|
+| `get_order`, `get_ticket`, `get_account` — own account | yes | yes | yes |
+| `get_order`, `get_ticket`, `get_account` — any account | no | yes | yes |
+| `search_policy` | own agreement + general | full | full |
+| `query_tickets` | no | yes | yes |
+| `my_queue` (driven by `assigned_to`) | no | yes | yes |
+| calculators, `check_data_consistency` | yes | yes | yes |
+| `sla_first_response_status` | no | yes | yes |
+| `scan_support_health`, `explain_finding` | no | **no** | yes |
+| `prepare_action` / `execute_action` | yes | yes | yes |
+| `approve_credit` (> INR 1,000, SOP v4 §3) | no | **no** | yes |
+
+Three genuinely different schemas, all demonstrable on shipped rows: logged in as Maya the ops page
+does not exist; logged in as Priya it returns five ranked findings.
 
 ### 4.4 Defence in depth
 
@@ -227,9 +261,41 @@ One pass over the six PDFs produces:
 | `text` | verbatim clause text |
 | `params` | typed extraction: `{fee_inr: 0, waiver: true, applies_to_status: ["BOOKED"]}` |
 
-`params` is the bridge from prose to arithmetic. It is extracted once at build time, reviewed by
-hand, and committed. The calculators read `params`, never the prose — so a calculator can never
-misread a clause at runtime, and a bad extraction is caught by unit tests rather than by a user.
+`params` is the bridge from prose to arithmetic. The calculators read `params`, never the prose — so
+a calculator can never misread a clause at runtime.
+
+**Extraction is a real pipeline with a verified baseline (D24).** Ingest parses the PDFs into
+`params`. `src/knowledge/clause_params_baseline.yaml` holds the hand-reviewed values and is
+committed. `test_clause_params.py` asserts `ingest(pdf) == baseline` clause by clause, so a re-ingest
+that silently changes a threshold fails CI instead of producing a wrong answer with a correct-looking
+citation. The baseline is the highest-value review artifact in the build.
+
+```yaml
+northstar_agmt::§2:
+  topic: cancellation_fee
+  overrides: true
+  fee_inr: 0
+  waiver: true
+  applies_to_status: [BOOKED]
+  window_minutes: null          # "regardless of how long ago"
+
+cancel_sop_v4::§1:
+  topic: cancellation_fee
+  overrides: null               # it IS the default
+  free_window_minutes: 30
+  fee_after_window_inr: 250
+  waivable_by_agreement: true
+
+lumenworks_agmt::§2:
+  topic: cancellation_fee
+  overrides: false              # explicit non-override
+
+lumenworks_agmt::§3:
+  topic: failed_pickup_credit
+  overrides: true
+  threshold_hours: 4            # replaces SOP's 2
+  credit_inr: 300               # replaces lower(500, 10% of fee)
+```
 
 **(b) Chroma chunks** — clause-boundary chunks (clause integrity beats uniform length), stamped with
 the same metadata, for open-ended search and known-issue matching.
@@ -389,6 +455,20 @@ sla_first_response_status(ticket_snapshot_id, resolution_id)   # staff only
 (findings §9), so a real breach cannot be measured — only elapsed-time-versus-target can be computed.
 The calculator says so rather than asserting a breach it cannot prove.
 
+### Low-confidence severity (D25)
+
+Severity is inferred, and the target depends on it, so the behaviour below the confidence threshold
+is asymmetric by surface — because the cost of being wrong is asymmetric.
+
+| Surface | Behaviour below threshold | Why |
+|---|---|---|
+| Ops triage (`scan_support_health`) | Assume the **more severe** class, label it `severity_inferred: true`, rank accordingly | An over-prioritised ticket costs an analyst two minutes. A missed P1 costs an outage. |
+| Customer-facing answer | **Do not quote a target.** Return `severity: undetermined` and escalate (D27) | Quoting an unsure target is a promise ParcelPilot may not keep |
+
+The two P1 triggers named verbatim in Policy v3 §2 — complete production outage preventing all
+shipment creation, and suspected credential exposure — are matched by deterministic guard (D23) and
+never reach this path.
+
 Verified expected outputs are enumerated in findings §10 and become the golden set.
 
 ---
@@ -426,24 +506,26 @@ Conflict classes implemented:
 
 ## 10. Tool Catalogue
 
-Fourteen tools, five classes, with typed handles wiring them together.
+Sixteen tools, six classes, with typed handles wiring them together.
 
-| Tool | Class | Consumes | Produces | Customer | Staff |
-|---|---|---|---|---|---|
-| `search_policy` | Document | query, topic_tags | chunks + tiers | scoped | full |
-| `get_order` | Structured | order_id | `snapshot_id` | own account | any |
-| `get_ticket` | Structured | ticket_id | `snapshot_id` | own account | any |
-| `get_account` | Structured | — / account_id | `snapshot_id` | own only | any |
-| `query_tickets` | Structured, aggregate | filters | rows | — | yes |
-| `resolve_policy` | Authority | topic, `snapshot_id` | `resolution_id` | scoped | full |
-| `compute_cancellation_fee` | Calculation | `snapshot_id`, `resolution_id` | `calc_id` | yes | yes |
-| `compute_service_credit` | Calculation | `snapshot_id`, `resolution_id` | `calc_id` | yes | yes |
-| `sla_first_response_status` | Calculation | `snapshot_id`, `resolution_id` | `calc_id` | — | yes |
-| `check_data_consistency` | Integrity | `snapshot_id` | `report_id` | yes | yes |
-| `scan_support_health` | Detection | window | findings | — | yes |
-| `explain_finding` | Detection | finding_id | evidence chain | — | yes |
-| `prepare_action` | State-change (1) | kind, payload, evidence ids | preview + token | yes | yes |
-| `execute_action` | State-change (2) | token | receipt | yes | yes |
+| Tool | Class | Consumes | Produces | customer | support_agent | ops_manager |
+|---|---|---|---|---|---|---|
+| `search_policy` | Document | query, topic_tags | chunks + tiers | scoped | full | full |
+| `get_order` | Structured | order_id | `snapshot_id` | own account | any | any |
+| `get_ticket` | Structured | ticket_id | `snapshot_id` | own account | any | any |
+| `get_account` | Structured | — / account_id | `snapshot_id` | own only | any | any |
+| `query_tickets` | Structured, aggregate | filters | rows | — | yes | yes |
+| `my_queue` | Structured | — | tickets where `assigned_to` = self | — | yes | yes |
+| `resolve_policy` | Authority | topic, `snapshot_id` | `resolution_id` | scoped | full | full |
+| `compute_cancellation_fee` | Calculation | `snapshot_id`, `resolution_id` | `calc_id` | yes | yes | yes |
+| `compute_service_credit` | Calculation | `snapshot_id`, `resolution_id` | `calc_id` | yes | yes | yes |
+| `sla_first_response_status` | Calculation | `snapshot_id`, `resolution_id` | `calc_id` | — | yes | yes |
+| `check_data_consistency` | Integrity | `snapshot_id` | `report_id` | yes | yes | yes |
+| `scan_support_health` | Detection | window | findings | — | **—** | yes |
+| `explain_finding` | Detection | finding_id | evidence chain | — | **—** | yes |
+| `prepare_action` | State-change (1) | kind, payload, evidence ids | preview + token | yes | yes | yes |
+| `execute_action` | State-change (2) | token | receipt | yes | yes | yes |
+| `approve_credit` | State-change, authz | `calc_id` | approval record | — | **—** | yes |
 
 **Handle discipline.** `compute_cancellation_fee(order_id="ORD-1001")` is not a valid call — the
 signature has no such parameter. Calling it without a `resolution_id` returns a structured
@@ -563,7 +645,33 @@ Executed actions append to an immutable `actions` table carrying the full eviden
 action is auditable back to the clauses that justified it.
 
 Action kinds (mocked, as permitted): `create_escalation`, `update_ticket_status`,
-`create_followup_task`, `request_carrier_verification`.
+`create_followup_task`, `request_carrier_verification`, `approve_credit`.
+
+### Escalation is an action, not a sentence (D27)
+
+When the system declines to answer — no citable source, unresolved conflict, undetermined severity,
+or an explicitly unsupported exception request — it does not merely say "a human will follow up". It
+**drafts an escalation record** and routes it through the same gate:
+
+```
+create_escalation {
+  account_id, thread_id,
+  severity            : derived, or "undetermined" with the reason
+  question            : the user's request, verbatim
+  what_is_unresolved  : the specific gap — "no clause in the corpus documents
+                        how to change a billing contact"
+  evidence_chain      : [snapshot_id, resolution_id, report_id, ...]
+  sources_consulted   : clause refs and tiers actually read
+}
+```
+
+`approve_credit` above INR 1,000 is the one action gated by role as well as by confirmation (D26).
+It is implemented and unit-tested against a synthetic fixture; on the shipped data individual credits
+cap at INR 500, so it cannot fire — which the product note states rather than hides. A test fixture
+is not data augmentation; the shipped dataset stays untouched.
+
+TKT-503's billing-contact question is the live demo: nothing in the pack documents the procedure, so
+the correct behaviour is a drafted escalation naming exactly that gap.
 
 ---
 
@@ -635,10 +743,16 @@ class EmbeddingProvider(Protocol):
 
 Verified working slugs as of 2026-08-22 (see findings §11):
 
-| Provider | cheap | strong | embeddings |
-|---|---|---|---|
-| Gemini (primary) | `gemini-3.5-flash-lite` | `gemini-3.6-flash` | `gemini-embedding-001` |
-| OpenRouter (alternate) | `google/gemini-2.5-flash-lite` | configurable | `openai/text-embedding-3-small` |
+| Provider | cheap | strong | embeddings | status |
+|---|---|---|---|---|
+| Gemini | `gemini-3.5-flash-lite` | `gemini-3.6-flash` | `gemini-embedding-001` | **primary — dev, tests, demo** |
+| OpenRouter | `google/gemini-2.5-flash-lite` | configurable | `openai/text-embedding-3-small` | implemented, switchable, **unfunded** |
+
+**On the unfunded alternate (D9a).** OpenRouter is a first-class implementation of both protocols
+with its own unit tests against a recorded client, selected by `LLM_PROVIDER=openrouter`. It is
+deliberately not on the demo path: the account holds $0 and its free slugs are being delisted, so
+depending on it would trade a real risk for a cosmetic one. The writeup states this plainly rather
+than implying failover we have not exercised live.
 
 **Operational guards**
 
@@ -743,7 +857,10 @@ Three layers. Each catches what the others cannot.
 | `test_confirmation.py` | No execution without a valid token; no token while a blocking conflict stands; token reuse refused |
 | `test_consistency.py` | ORD-1001 raises `stale_status`; TKT-450 and TKT-451 raise `historical_contradiction` |
 | `test_grounding.py` | A number absent from the fact block fails the gate; the repair loop terminates |
-| `test_severity.py` | TKT-501 and TKT-505 are P1 by deterministic guard, not by model sample |
+| `test_severity.py` | TKT-501 and TKT-505 are P1 by deterministic guard, not by model sample; low confidence escalates on the customer surface and rounds up on the ops surface (D25) |
+| `test_clause_params.py` | `ingest(pdf)` matches the reviewed baseline clause by clause (D24) |
+| `test_role_projection.py` | Maya cannot reach `scan_support_health`; `my_queue` returns exactly her three tickets; only `ops_manager` can `approve_credit` |
+| `test_escalation.py` | A no-source question drafts an escalation naming the gap, and creates nothing without confirmation (D27) |
 
 ### Layer 2 — exact-answer golden set (~30 questions)
 
@@ -787,6 +904,9 @@ Every assumption is surfaced in the UI where it affects an answer, and listed in
 | A6 | Actions are mocked | Explicitly permitted by the brief | Confirmation card labels the action as simulated |
 | A7 | ACCT-003 and ACCT-004 have no agreement | Absent from the pack; workbook notes confirm | Resolver returns Tier 2 as governing with no override |
 | A8 | Enterprise plan ≠ premium support | ACCT-004 is Enterprise with `premium_support = False` | Account fact lookup reports both fields |
+| A9 | `assigned_to` defines a support agent's queue | The column exists and is populated; nothing else in the pack uses it | `my_queue` results are labelled as "assigned to you" |
+| A10 | SOP §3 manager approval cannot fire on this data | Individual credits cap at INR 500 (fees peak 5,100, so 10% is 510, capped at 500) | Fact block always renders `requires_manager_approval`; product note states the gate is tested but unreachable |
+| A11 | Escalation creates a record, not just a message | The brief requires escalation but does not define its artifact | Confirmation card shows the drafted record before anything is created |
 
 ---
 
@@ -815,6 +935,7 @@ parcelpilot/
 │   │   ├── ingest.py              # PDF → clause registry + chunks
 │   │   ├── clause_parser.py       # clause segmentation + param extraction
 │   │   ├── topics.py              # curated topic_tag enum
+│   │   ├── clause_params_baseline.yaml   # ★ reviewed, committed, drift-tested
 │   │   ├── vectorstore/  base.py · chroma_cloud.py · chroma_local.py
 │   │   ├── retriever.py           # BM25 + dense, RRF
 │   │   └── resolver.py            # ★ precedence over the clause registry
@@ -866,9 +987,10 @@ Each milestone ends green and demoable. Nothing depends on a later milestone.
 | 0 | Repo hygiene, config, `clock.py`, preflight | `pytest` green; `preflight.py` verifies both providers and both embedding slugs |
 | 1 | Data layer | `build_db.py` produces `parcelpilot.db`; account-scoped views enforce ACL in tests |
 | 2 | Clause registry + ingest | 6 PDFs → typed clauses with reviewed `params`; `provision_chroma.py` creates Cloud collections; tool-calling verified on both providers |
+| 2.5 | **Golden-set review gate (D28)** | ~30 expected answers written as a reviewable table and **signed off by you** before any test depends on them |
 | 3 | Resolver + calculators | Every row of findings §10 asserted by unit test, including the two explicit non-overrides |
 | 4 | Consistency + severity | ORD-1001 staleness and both historical contradictions detected; P1 guards fire |
-| 5 | Tools with typed handles | A calculator refuses a bare order_id; ACL denial tested per persona |
+| 5 | Tools with typed handles | A calculator refuses a bare order_id; ACL denial tested for all six personas; `my_queue` splits Maya's and Rohit's tickets |
 | 6 | Agent graph, no UI | CLI harness answers the brief's two example questions from both relevant personas |
 | 7 | Composition + grounding gate | A number absent from the fact block fails the gate; repair terminates |
 | 8 | FastAPI + SSE + confirmation | `curl` the SSE stream; confirm and cancel both work; `?from_seq=` replays |
@@ -919,13 +1041,11 @@ Carried into implementation; none block starting.
 
 1. **Tool-calling reliability on Gemini's OpenAI-compatible endpoint** — verify in Milestone 2.
    Fallback is the native `google-genai` client behind the same protocol.
-2. **`params` extraction review** — the typed parameters on ~25 clauses are extracted once and must be
-   hand-checked. This is the single highest-value review in the build; a wrong `params` value is a
-   wrong answer with a correct-looking citation.
+2. **`params` baseline review** — resolved in principle by D24; the ~25 reviewed values still have to
+   be written and checked in Milestone 2. Highest-value review in the build.
 3. **Chroma Cloud provisioning** — the tenant has zero databases. Script it so a reviewer can
    reproduce, and confirm the free-tier limits are adequate for two collections of ~50 chunks.
-4. **OpenRouter funding** — decide whether to add $10 before submission so the alternate provider is
-   demonstrably live rather than merely implemented.
-5. **Severity confidence threshold** — what LLM confidence is low enough to escalate instead of
-   quoting a target. Calibrate against the five open tickets.
+4. ~~**OpenRouter funding**~~ — **closed.** Staying unfunded (D9a). Gemini carries dev, tests and demo.
+5. **Severity confidence threshold value** — the *behaviour* is settled (D25); the numeric cut-off is
+   not. Calibrate against the five open tickets in Milestone 4.
 6. **Railway topology** — one service running both processes, or two services. Defer to Milestone 12.
