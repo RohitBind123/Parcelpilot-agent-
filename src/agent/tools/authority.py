@@ -40,20 +40,24 @@ def search_policy(context: ToolContext) -> Tool:
         include_deprecated: bool = False,
         k: int = DEFAULT_K,
     ) -> ToolResult | ToolError:
+        # Argument validation first, and the order matters. A bad topic is the
+        # caller's mistake and is actionable; "search is unavailable" is not
+        # recoverable, so reporting it first would stop the model correcting an
+        # error it actually made.
+        if topic is not None and topic not in TOPICS:
+            return ToolError(f"unknown topic {topic!r}; expected one of {list(TOPICS)}")
         if context.retriever is None:
             return ToolError(
                 "policy search is unavailable in this session; "
                 "use resolve_policy if you know the topic",
                 recoverable=False,
             )
-        if topic is not None and topic not in TOPICS:
-            return ToolError(f"unknown topic {topic!r}; expected one of {list(TOPICS)}")
 
         tiers = _WITH_DEPRECATED if (staff and include_deprecated) else CITABLE_TIERS
         # Passed into the search rather than applied to its output: the
         # retriever filters before ranking, so k means k instead of "k minus
         # whatever was dropped afterwards".
-        chunks = context.retriever.search(
+        chunks = context.retriever.retrieve(
             query,
             principal=context.principal,
             tiers=tiers,

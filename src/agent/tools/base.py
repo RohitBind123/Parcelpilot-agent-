@@ -42,6 +42,11 @@ class Param:
     required: bool = True
     enum: tuple[str, ...] | None = None
     items: JsonType | None = None
+    #: The tool call that mints this value, when it is an evidence handle
+    #: rather than something the user typed. Rendered into the error when the
+    #: argument is missing, which is what turns a validation failure into an
+    #: instruction the model can follow.
+    produced_by: str | None = None
 
     def to_schema(self) -> dict[str, Any]:
         schema: dict[str, Any] = {"type": self.type, "description": self.description}
@@ -75,19 +80,6 @@ class ToolError:
     #: Whether trying something different could succeed. False for an internal
     #: fault, so the model escalates instead of looping.
     recoverable: bool = True
-
-    @classmethod
-    def missing_prerequisite(cls, param: str, *, produced_by: str, **hint: Any) -> ToolError:
-        """The error that carries the multi-step chain.
-
-        Names the argument and the tool that mints it, because "invalid
-        arguments" tells the model there is a problem and not what to do.
-        """
-        detail = "".join(f", {key}={value!r}" for key, value in hint.items() if value is not None)
-        return cls(
-            f"missing required argument {param!r}. Call {produced_by} first{detail} "
-            f"and pass the handle it returns as {param}."
-        )
 
     def to_payload(self) -> dict[str, Any]:
         return {"error": True, "message": self.message, "recoverable": self.recoverable}
@@ -127,6 +119,22 @@ Outcome = ToolResult | ToolError | ToolDenied
 #: What a tool body returns. Denials and prerequisite errors are values it
 #: constructs; anything raised is a fault, not an answer.
 Runner = Callable[..., Outcome]
+
+
+def _missing_message(tool_name: str, missing: Sequence[Param]) -> str:
+    """Name what is absent, and where it comes from when that is knowable.
+
+    A handle the model has not obtained yet is a different problem from an
+    identifier the user has not supplied. Telling it to "call get_order first"
+    to obtain an order id would send it round a loop; telling it to call
+    resolve_policy to obtain a resolution_id is the instruction that makes the
+    chain work.
+    """
+    names = [p.name for p in missing]
+    head = f"missing required argument(s) {names} for {tool_name}"
+    steps = [f"{p.name} comes from {p.produced_by}" for p in missing if p.produced_by]
+    return f"{head}. " + "; ".join(steps) + "." if steps else head
+
 
 _INTERNAL_FAULT: Final = (
     "the tool failed for an internal reason and the failure has been logged; do not retry this call"
@@ -171,9 +179,9 @@ class Tool:
                 f"expected a subset of {sorted(known)}"
             )
 
-        missing = [p.name for p in self.params if p.required and p.name not in arguments]
+        missing = [p for p in self.params if p.required and p.name not in arguments]
         if missing:
-            return ToolError(f"missing required argument(s) {missing} for {self.name}")
+            return ToolError(_missing_message(self.name, missing))
 
         try:
             return self.run(**arguments)

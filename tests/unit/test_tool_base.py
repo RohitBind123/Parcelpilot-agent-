@@ -91,6 +91,47 @@ class TestCalling:
         assert isinstance(result, ToolError)
         assert "order_id" in result.message
 
+    def test_a_missing_handle_names_the_tool_that_mints_it(self):
+        # The designed behaviour, and the reason the chain is a mechanic rather
+        # than a hope: being told "resolution_id is missing" leaves the model
+        # guessing, and being told "call resolve_policy" does not.
+        calculator = Tool(
+            name="compute_cancellation_fee",
+            description="",
+            params=(
+                Param("snapshot_id", "string", "From get_order.", produced_by="get_order"),
+                Param(
+                    "resolution_id",
+                    "string",
+                    "From resolve_policy.",
+                    produced_by="resolve_policy(topic='cancellation_fee')",
+                ),
+            ),
+            run=echo,
+        )
+        message = calculator(snapshot_id="snap_1").message
+        assert "resolution_id" in message
+        assert "resolve_policy(topic='cancellation_fee')" in message
+
+    def test_several_missing_handles_name_all_their_producers(self):
+        calculator = Tool(
+            name="sla",
+            description="",
+            params=(
+                Param("a", "string", "", produced_by="get_ticket"),
+                Param("b", "string", "", produced_by="get_account"),
+            ),
+            run=echo,
+        )
+        message = calculator().message
+        assert "get_ticket" in message
+        assert "get_account" in message
+
+    def test_a_plain_missing_argument_keeps_the_plain_message(self, tool):
+        # `order_id` is something the user typed, not a handle. Telling the
+        # model to "call get_order first" to get an order id would be a loop.
+        assert "call" not in tool().message.lower()
+
     def test_an_optional_argument_may_be_omitted(self, tool):
         assert isinstance(tool(order_id="ORD-1001"), ToolResult)
 
@@ -100,17 +141,8 @@ class TestErrorsAreValuesNotExceptions:
         # The whole point. The model is the caller; it cannot catch anything.
         assert isinstance(tool(), ToolError)
 
-    def test_an_error_names_the_prerequisite_it_wants(self):
-        error = ToolError.missing_prerequisite(
-            "resolution_id", produced_by="resolve_policy", topic="cancellation_fee"
-        )
-        assert "resolution_id" in error.message
-        assert "resolve_policy" in error.message
-        assert error.recoverable is True
-
     def test_an_error_serialises_for_model_context(self):
-        error = ToolError.missing_prerequisite("resolution_id", produced_by="resolve_policy")
-        payload = error.to_payload()
+        payload = ToolError("resolution_id is missing").to_payload()
         assert payload["error"] is True
         assert json.loads(json.dumps(payload))
 

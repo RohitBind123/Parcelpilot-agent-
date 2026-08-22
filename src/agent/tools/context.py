@@ -37,6 +37,10 @@ class ToolContext:
     #: Hybrid retrieval. Optional: the structured and calculation tools do not
     #: need it, and a unit test of those should not have to build an index.
     retriever: Any | None = None
+    #: Severity inference beyond the two guards (D23). Optional, and absent by
+    #: default: a deployment with no model reachable must still page for an
+    #: outage, and it does, because the guards do not go through here.
+    severity_classifier: Any | None = None
 
     def close(self) -> None:
         self.repository.close()
@@ -50,6 +54,7 @@ def open_tool_context(
     run_id: str = "run",
     db_path: Path | str | None = None,
     retriever: Any | None = None,
+    severity_classifier: Any | None = None,
     evidence_connection: sqlite3.Connection | None = None,
 ) -> Iterator[ToolContext]:
     path = Path(db_path or get_settings().db_path)
@@ -65,6 +70,7 @@ def open_tool_context(
         # snapshot of a database that is rebuilt rather than migrated.
         resolver=PolicyResolver(repository.connection),
         retriever=retriever,
+        severity_classifier=severity_classifier,
     )
     try:
         yield context

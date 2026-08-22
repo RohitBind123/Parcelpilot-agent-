@@ -288,3 +288,178 @@ class TestConsistencyTool:
         )
         assert isinstance(result, ToolError)
         assert "get_order" in result.message
+
+
+class TestTheSlaTool:
+    """Its wiring is the reason it has its own class: severity is *derived*
+    here, not passed in, so the tool reaches for the definitions and the
+    classifier itself. That extra dependency is what an end-to-end test caught
+    and these unit tests had not."""
+
+    def chain(self, session, persona_id="maya_agent", ticket_id="TKT-501", account="ACCT-001"):
+        toolset = tools(session, persona_id)
+        ticket = toolset["get_ticket"](ticket_id=ticket_id).data["snapshot_id"]
+        acct = toolset["get_account"](account_id=account).data["account_snapshot_id"]
+        resolution = toolset["resolve_policy"](
+            topic="first_response_target", snapshot_id=ticket
+        ).data["resolution_id"]
+        return toolset, ticket, acct, resolution
+
+    def test_severity_is_derived_not_supplied(self, session):
+        toolset, *_ = self.chain(session)
+        params = {p.name for p in toolset["sla_first_response_status"].params}
+        # A4: there is no severity column, and letting a caller pass one would
+        # make the answer depend on an assertion nobody checked.
+        assert "severity" not in params
+
+    def test_a_guard_ticket_grades_p1_with_no_classifier_configured(self, session):
+        toolset, ticket, acct, resolution = self.chain(session)
+        data = toolset["sla_first_response_status"](
+            snapshot_id=ticket, account_snapshot_id=acct, resolution_id=resolution
+        ).data
+        assert data["severity"] == "P1"
+        assert data["severity_inferred"] is False
+
+    def test_an_ungraded_ticket_is_triaged_up_rather_than_guessed(self, session):
+        # D25 on the ops surface. With no classifier the severity is
+        # undetermined, and an undetermined ticket costs an analyst two minutes
+        # while a missed P1 costs an outage.
+        toolset, ticket, acct, resolution = self.chain(
+            session, ticket_id="TKT-502", account="ACCT-002"
+        )
+        data = toolset["sla_first_response_status"](
+            snapshot_id=ticket, account_snapshot_id=acct, resolution_id=resolution
+        ).data
+        assert data["severity_inferred"] is True
+        assert data["measurable"] is False
+
+    def test_a_ticket_handle_is_required_where_a_ticket_belongs(self, session):
+        toolset, _ticket, acct, resolution = self.chain(session)
+        result = toolset["sla_first_response_status"](
+            snapshot_id=acct, account_snapshot_id=acct, resolution_id=resolution
+        )
+        assert isinstance(result, ToolError)
+        assert "get_ticket" in result.message
+
+    def test_it_is_absent_from_every_customer_toolset(self, session):
+        assert "sla_first_response_status" not in tools(session, "northstar_customer")
+
+
+class TestSearchWithoutAnIndex:
+    def test_it_says_so_rather_than_returning_nothing(self, session):
+        # An empty result reads as "no such policy", which is a wrong answer.
+        # A session with no retriever is a configuration fault, and the tool
+        # says which - and points at the tool that still works.
+        result = tools(session, "northstar_customer")["search_policy"](query="cancellation")
+        assert isinstance(result, ToolError)
+        assert result.recoverable is False
+        assert "resolve_policy" in result.message
+
+    def test_an_unknown_topic_is_refused_before_the_index_is_touched(self, session):
+        result = tools(session, "northstar_customer")["search_policy"](
+            query="anything", topic="refunds"
+        )
+        assert isinstance(result, ToolError)
+        assert "refunds" in result.message
+
+
+class TestTheCreditTool:
+    def chain(self, session, persona_id, order_id):
+        toolset = tools(session, persona_id)
+        snapshot = toolset["get_order"](order_id=order_id).data["snapshot_id"]
+        kwargs = {} if not persona(persona_id).is_staff else {"snapshot_id": snapshot}
+        credit = toolset["resolve_policy"](topic="failed_pickup_credit", **kwargs).data[
+            "resolution_id"
+        ]
+        approval = toolset["resolve_policy"](topic="credit_approval", **kwargs).data[
+            "resolution_id"
+        ]
+        return toolset, snapshot, credit, approval
+
+    def test_the_agreement_threshold_replaces_the_default(self, session):
+        # GS-007: ORD-2002 is 4.5 hours late and LumenWorks' agreement gives
+        # INR 300 past 4 hours, not the SOP's 240.
+        toolset, snapshot, credit, approval = self.chain(session, "lumenworks_customer", "ORD-2002")
+        data = toolset["compute_service_credit"](
+            snapshot_id=snapshot, resolution_id=credit, approval_resolution_id=approval
+        ).data
+        assert data["credit_inr"] == 300
+        assert data["governing_clause"] == "lumenworks_service_agreement::§3"
+
+    def test_the_approval_line_arrives_as_its_own_resolution(self, session):
+        toolset, snapshot, credit, _ = self.chain(session, "lumenworks_customer", "ORD-2002")
+        without = toolset["compute_service_credit"](snapshot_id=snapshot, resolution_id=credit).data
+        # Absent means unknown, not False. A missing threshold is not a licence
+        # to settle.
+        assert without["requires_manager_approval"] is None
+
+    def test_a_proposed_amount_is_tested_against_the_threshold(self, session):
+        toolset, snapshot, credit, approval = self.chain(session, "lumenworks_customer", "ORD-2002")
+        data = toolset["compute_service_credit"](
+            snapshot_id=snapshot,
+            resolution_id=credit,
+            approval_resolution_id=approval,
+            proposed_credit_inr=2000.0,
+        ).data
+        assert data["requires_manager_approval"] is True
+
+    def test_a_cancellation_resolution_is_refused_here_too(self, session):
+        toolset = tools(session, "lumenworks_customer")
+        snapshot = toolset["get_order"](order_id="ORD-2002").data["snapshot_id"]
+        wrong = toolset["resolve_policy"](topic="cancellation_fee").data["resolution_id"]
+        result = toolset["compute_service_credit"](snapshot_id=snapshot, resolution_id=wrong)
+        assert isinstance(result, ToolError)
+        assert "failed_pickup_credit" in result.message
+
+
+class TestTheRegistryRefusesToBuildSomethingUnsafe:
+    """`build_toolset` re-checks what the matrix already decided. Cheap, and it
+    is the assertion that would fire if a builder were ever wired to the wrong
+    row - which is the one bug in this file that would be silent."""
+
+    def test_a_builder_returning_an_unlisted_tool_raises(self, session, monkeypatch):
+        from src.agent.tools import registry
+        from src.agent.tools.base import Tool
+
+        _, context = session("northstar_customer")
+        monkeypatch.setitem(
+            registry._BUILDERS,
+            "get_order",
+            lambda _ctx: Tool(name="get_everything", description="", params=(), run=lambda: None),
+        )
+        with pytest.raises(registry.ProjectionError, match="get_everything"):
+            registry.build_toolset(context)
+
+    def test_a_tool_needing_a_scope_the_role_lacks_raises(self, session, monkeypatch):
+        from src.agent.tools import registry
+        from src.agent.tools.base import Tool
+        from src.auth.principal import SCOPE_OPS_DETECTION
+
+        _, context = session("northstar_customer")
+        monkeypatch.setitem(
+            registry._BUILDERS,
+            "get_order",
+            lambda _ctx: Tool(
+                name="get_order",
+                description="",
+                params=(),
+                run=lambda: None,
+                requires_scope=SCOPE_OPS_DETECTION,
+            ),
+        )
+        with pytest.raises(registry.ProjectionError, match="read:ops_detection"):
+            registry.build_toolset(context)
+
+    def test_the_startup_check_catches_a_builder_with_no_matrix_row(self, monkeypatch):
+        from src.agent.tools import registry
+
+        monkeypatch.setitem(registry._BUILDERS, "invent_policy", lambda _ctx: None)
+        with pytest.raises(registry.ProjectionError, match="invent_policy"):
+            registry._startup_check()
+
+    def test_the_startup_check_catches_a_row_that_is_neither_built_nor_deferred(self, monkeypatch):
+        from src.agent.tools import registry
+
+        monkeypatch.setitem(registry.PROJECTION, "delete_account", frozenset({"ops_manager"}))
+        with pytest.raises(registry.ProjectionError, match="delete_account"):
+            registry._startup_check()

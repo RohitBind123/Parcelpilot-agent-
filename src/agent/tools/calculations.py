@@ -77,8 +77,13 @@ def compute_cancellation_fee(context: ToolContext) -> Tool:
             "There is no order_id parameter: take the snapshot first."
         ),
         params=(
-            Param("snapshot_id", "string", "From get_order."),
-            Param("resolution_id", "string", "From resolve_policy(topic='cancellation_fee')."),
+            Param("snapshot_id", "string", "From get_order.", produced_by="get_order"),
+            Param(
+                "resolution_id",
+                "string",
+                "From resolve_policy(topic='cancellation_fee').",
+                produced_by="resolve_policy(topic='cancellation_fee')",
+            ),
         ),
         run=run,
     )
@@ -118,8 +123,13 @@ def compute_service_credit(context: ToolContext) -> Tool:
             "approval is needed."
         ),
         params=(
-            Param("snapshot_id", "string", "From get_order."),
-            Param("resolution_id", "string", "From resolve_policy(topic='failed_pickup_credit')."),
+            Param("snapshot_id", "string", "From get_order.", produced_by="get_order"),
+            Param(
+                "resolution_id",
+                "string",
+                "From resolve_policy(topic='failed_pickup_credit').",
+                produced_by="resolve_policy(topic='failed_pickup_credit')",
+            ),
             Param(
                 "approval_resolution_id",
                 "string",
@@ -180,9 +190,19 @@ def sla_first_response_status(context: ToolContext) -> Tool:
             "does not record first-reply times, so this is never a confirmed breach."
         ),
         params=(
-            Param("snapshot_id", "string", "From get_ticket."),
-            Param("account_snapshot_id", "string", "From get_account."),
-            Param("resolution_id", "string", "From resolve_policy(topic='first_response_target')."),
+            Param("snapshot_id", "string", "From get_ticket.", produced_by="get_ticket"),
+            Param(
+                "account_snapshot_id",
+                "string",
+                "From get_account.",
+                produced_by="get_account",
+            ),
+            Param(
+                "resolution_id",
+                "string",
+                "From resolve_policy(topic='first_response_target').",
+                produced_by="resolve_policy(topic='first_response_target')",
+            ),
         ),
         run=run,
         requires_scope=SCOPE_SLA_STATUS,
@@ -221,7 +241,12 @@ def check_data_consistency(context: ToolContext) -> Tool:
             "topics under discussion to also check that a citable rule exists for them."
         ),
         params=(
-            Param("snapshot_id", "string", "From get_order or get_ticket."),
+            Param(
+                "snapshot_id",
+                "string",
+                "From get_order or get_ticket.",
+                produced_by="get_order or get_ticket",
+            ),
             Param(
                 "topics",
                 "array",
