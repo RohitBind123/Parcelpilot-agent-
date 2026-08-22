@@ -398,3 +398,64 @@ class TestResolutionShape:
         assert json.loads(json.dumps(payload)) == payload
         assert payload["governing"]["clause_id"] == NORTHSTAR_CANCEL
         assert payload["topic"] == "cancellation_fee"
+
+
+class TestSilenceIsNotDisagreement:
+    """Two bugs found while building M4's consistency check, both on one topic.
+
+    `bulk_upload_limit` is carried by two Tier 3 clauses: the product guide's
+    plan capabilities, which says 5,000 rows, and KI-208, which says uploads
+    above roughly 3,000 intermittently fail *while the supported limit remains
+    5,000*. They agree. The resolver said they were an unresolved conflict and
+    refused to govern the topic at all, so "is 5,000 rows my limit?" had no
+    answer - from a corpus that states one in plain words.
+    """
+
+    def test_a_clause_silent_on_a_key_does_not_contradict_one_that_states_it(self, resolver):
+        # `c.params.get(key)` returns None for a clause that never mentions the
+        # key, and None compared unequal to a real value. That is the missing-
+        # data-is-not-zero rule arriving in the precedence layer: absent is not
+        # a different answer, it is no answer.
+        resolution = resolver.resolve("bulk_upload_limit", persona("lumenworks_customer"))
+        assert resolution.unresolved_conflict is None
+
+    def test_the_plan_capability_governs_and_the_known_issue_supports(self, resolver):
+        # Alphabetically KI-208 sorts before §1, so the tie-break handed the
+        # topic to the known issue - and a defect report is never the authority
+        # on what the plan includes. KI-208's own text defers to it in terms.
+        resolution = resolver.resolve("bulk_upload_limit", persona("lumenworks_customer"))
+        assert resolution.governing.clause_id == "product_operations_guide_and_known_issues::§1"
+        assert resolution.governing.params["supported_rows"] == 5000
+        assert "product_operations_guide_and_known_issues::KI-208" in ids(resolution.supporting)
+
+    def test_the_known_issue_is_still_reachable_for_the_answer(self, resolver):
+        # Demoting it must not hide it. 3,000 is the number the customer is
+        # hitting, and an answer that corrects the limit without explaining the
+        # defect sends them back to a 3,500-row upload that will fail again.
+        resolution = resolver.resolve("bulk_upload_limit", persona("lumenworks_customer"))
+        assert "product_operations_guide_and_known_issues::KI-208" in ids(resolution.all_clauses)
+
+    def test_a_known_issue_never_governs_anything(self, resolver):
+        # Not even its own topic. KI-208 and KI-211 are open issues about
+        # unrelated things; asking which of them governs `known_issue` is not a
+        # question with an answer, and the resolver used to report their
+        # differing `issue_status` as an unresolved conflict - a disagreement
+        # neither of them is having.
+        resolution = resolver.resolve("known_issue", persona("northstar_customer"))
+        assert resolution.governing is None
+        assert resolution.unresolved_conflict is None
+        assert len(resolution.supporting) >= 2
+
+    def test_shipment_status_semantics_resolves_the_same_way(self, resolver):
+        # KI-211 and the guide's status definitions, same shape as above.
+        resolution = resolver.resolve("shipment_status_semantics", persona("northstar_customer"))
+        assert resolution.governing.clause_id == "product_operations_guide_and_known_issues::§1"
+
+    def test_a_key_only_one_clause_states_is_not_a_differing_param(self, resolver):
+        # The guard on the fix from the other side. Before it, the conflict
+        # report listed all four keys as "differing" - including two that only
+        # one clause has ever mentioned. A conflict report that names keys
+        # nobody disagrees about is not a description of a disagreement.
+        for topic in ("bulk_upload_limit", "shipment_status_semantics", "known_issue"):
+            conflict = resolver.resolve(topic, persona("northstar_customer")).unresolved_conflict
+            assert conflict is None, f"{topic} reports {conflict}"

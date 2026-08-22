@@ -35,7 +35,10 @@ def persona(persona_id: str):
     return to_principal(get_persona(persona_id))
 
 
-def inferred(severity: str, confidence: float = 0.9) -> SeverityVerdict:
+def inferred(severity: str, confidence: float = 1.0) -> SeverityVerdict:
+    """A model-graded verdict. The default is what the real classifier returns
+    for the tickets in the pack it grades stably (see the M4 calibration in
+    `severity.py`); the low-confidence cases below pass an explicit value."""
     return SeverityVerdict(
         severity=severity,
         confidence=confidence,
