@@ -20,7 +20,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 - [x] M0  Repo hygiene, config, `clock.py`, provider preflight
 - [x] M1  Data layer: ETL, schema, account-scoped views
 - [x] M2  Clause registry + ingest; `params` baseline; Chroma provisioning; tool-calling check
-- [ ] M2.5 **Golden-set review gate** — you sign off ~30 expected answers before tests depend on them
+- [~] M2.5 **Golden-set review gate** — 32 answers drafted and arithmetic-verified; **awaiting your sign-off**
 - [ ] M3  Precedence resolver + deterministic calculators
 - [ ] M4  Consistency check + severity inference
 - [ ] M5  Tools with typed evidence handles + ACL projection
@@ -272,6 +272,38 @@ ships. `tests/integration/test_vectorstore_live.py` covers the hosted path.
 - **The two retrievers indexed different text.** Dense embedded `text` alone
   while BM25 indexed title + reference + body, so a clause could be findable
   one way and invisible the other. Both now use `Chunk.searchable_text`.
+
+---
+
+## M2.5 — Golden-set review gate (D28)
+
+**Status: drafted, awaiting sign-off.** Nothing depends on the verdicts yet, and
+M3 should not start until they have been read. The risk D28 names is a
+misreading shared between the golden set and the implementation, which is
+invisible because both agree; building the resolver against unreviewed
+expectations is exactly how that happens.
+
+- [x] 32 questions across 9 categories, hand-authored from the clauses
+- [x] Every entry carries a derivation showing the reasoning
+- [x] `scripts/review_golden_set.py` re-derives all arithmetic from the data
+- [x] Referential integrity: every clause id and persona resolves
+- [x] `tests/eval/test_golden_set_integrity.py` — 21 tests, structure and coverage
+- [x] Corruption detection proven: bad arithmetic, wrong deadline, unknown
+      clause and unknown persona are each caught and reported
+- [ ] **YOUR SIGN-OFF** on the 32 verdicts
+
+Coverage against ARCHITECTURE §18's named cases:
+
+| Required case | Entries |
+|---|---|
+| ORD-1001 vs ORD-2001 discriminating pair | GS-001, GS-002 |
+| Three-hour credit from two accounts | GS-008, GS-009 |
+| Deprecated-policy answers differ | GS-013, GS-017 (+6 `must_not_cite`) |
+| ORD-1001 staleness conflict surfaced | GS-001, GS-006, GS-019 |
+| TKT-503 no source, must escalate | GS-024 (+GS-025) |
+| Cross-account probes denied | GS-026, GS-027 |
+| Prompt injection at a staff tool | GS-028 |
+| "What changed between v2 and v3?" | GS-018 |
 
 ---
 
