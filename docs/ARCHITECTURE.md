@@ -782,10 +782,47 @@ than implying failover we have not exercised live.
   Deterministic per query, and it removes the embeddings quota from the demo's critical path.
 - Backoff with jitter; honour `Retry-After`.
 - Never embed documents at runtime.
-- **To verify during Milestone 2:** tool-calling reliability on Gemini's OpenAI-compatible endpoint.
-  It returned a `thought_signature` in `extra_content`, and in a single-tool no-system-prompt test the
-  model declined to call the tool. Fallback if it proves unreliable: the native `google-genai` client
-  behind the same `ChatProvider` protocol.
+- **Always send `max_tokens`.** OpenRouter reserves the requested budget against the account balance
+  *before* running, so an uncapped request 402s on a low balance even when the reply is two words
+  (observed: *"you requested up to 65535 tokens, but can only afford 15998"*). Default cap 4096. With
+  it, the unfunded OpenRouter account passes the entire live suite.
+- **Retries are the SDK's job.** The OpenAI client already backs off with jitter and honours
+  `Retry-After`. Layering `tenacity` on top would double both the backoff and the quota burn. What we
+  add is refusing to retry a 404 — retrying a delisted slug only delays the moment someone notices.
+
+### Gemini tool calls must echo a `thought_signature` (resolved)
+
+Verified live on 2026-08-22. This closes open item 1.
+
+Gemini 3.x attaches a `thought_signature` to **each tool call**, at
+`choices[].message.tool_calls[].extra_content.google.thought_signature`. The next request is rejected
+without it:
+
+> `400 — Function call is missing a thought_signature in functionCall parts.`
+
+That breaks every conversation past the first tool call, which is every conversation that matters
+here. The fix is small and stays inside the provider layer: `ToolCall` carries an opaque
+`provider_meta`, and `ChatProvider.to_assistant_message()` puts it back verbatim when rebuilding the
+assistant turn. Nothing outside `src/providers/` knows the field exists, and the native
+`google-genai` client is not needed.
+
+Reconstructing an assistant message by hand anywhere else is therefore a bug.
+
+### The typed-handle design was validated before it was built
+
+The same live test walked the real ORD-1001 question with three stub tools whose signatures encode
+the prerequisite chain. `gemini-3.6-flash`, `gemini-3.5-flash-lite` and OpenRouter's
+`google/gemini-2.5-flash` each independently produced:
+
+```
+get_order("ORD-1001")                                     -> snapshot_id
+resolve_policy(topic=..., snapshot_id=...)                -> resolution_id
+compute_cancellation_fee(snapshot_id=..., resolution_id=...)
+```
+
+No scripting, no plan node, and no ordering instruction in the prompt beyond "use tools for every
+factual claim". This is the empirical case for D13a over D11's scripted pipelines: the schema shape
+alone is enough to make the chain happen, and enough to make skipping a step impossible.
 
 ---
 
@@ -1003,7 +1040,7 @@ Each milestone ends green and demoable. Nothing depends on a later milestone.
 
 | # | Milestone | Done when |
 |---|---|---|
-| 0 | Repo hygiene, config, `clock.py`, preflight | `pytest` green; `preflight.py` verifies both providers and both embedding slugs |
+| 0 | Repo hygiene, config, `clock.py`, preflight | **Done.** 174 tests, 95% coverage; `preflight.py` green; live suite 8/8 on both providers |
 | 1 | Data layer | `build_db.py` produces `parcelpilot.db`; account-scoped views enforce ACL in tests |
 | 2 | Clause registry + ingest | 6 PDFs → typed clauses with reviewed `params`; `provision_chroma.py` creates Cloud collections; tool-calling verified on both providers |
 | 2.5 | **Golden-set review gate (D28)** | ~30 expected answers written as a reviewable table and **signed off by you** before any test depends on them |
@@ -1058,8 +1095,9 @@ Each milestone ends green and demoable. Nothing depends on a later milestone.
 
 Carried into implementation; none block starting.
 
-1. **Tool-calling reliability on Gemini's OpenAI-compatible endpoint** — verify in Milestone 2.
-   Fallback is the native `google-genai` client behind the same protocol.
+1. ~~**Tool-calling reliability on Gemini's OpenAI-compatible endpoint**~~ — **closed in M0.** It
+   works, provided each tool call's `thought_signature` is echoed back (§15). The native
+   `google-genai` client is not needed.
 2. **`params` baseline review** — resolved in principle by D24; the ~25 reviewed values still have to
    be written and checked in Milestone 2. Highest-value review in the build.
 3. **Chroma Cloud provisioning** — the tenant has zero databases. Script it so a reviewer can

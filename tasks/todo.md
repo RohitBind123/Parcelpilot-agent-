@@ -17,7 +17,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 
 ## Phase 1 — Implementation (not started; no code until instructed)
 
-- [ ] M0  Repo hygiene, config, `clock.py`, provider preflight
+- [x] M0  Repo hygiene, config, `clock.py`, provider preflight
 - [ ] M1  Data layer: ETL, schema, account-scoped views
 - [ ] M2  Clause registry + ingest; `params` baseline; Chroma provisioning; tool-calling check
 - [ ] M2.5 **Golden-set review gate** — you sign off ~30 expected answers before tests depend on them
@@ -44,7 +44,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 
 ## Still open (none block starting)
 
-- [ ] Tool-calling reliability on Gemini's OpenAI-compatible endpoint (verify in M2)
+- [x] ~~Tool-calling reliability on Gemini~~ — closed in M0 via thought_signature echo
 - [ ] Write and review the ~25-clause `params` baseline (M2)
 - [ ] Chroma Cloud database provisioning + free-tier limits (M2)
 - [ ] Numeric severity-confidence cut-off — behaviour settled, value not (M4)
@@ -52,62 +52,63 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 
 ---
 
-## M0 — Foundation (in progress)
+## M0 — Foundation (complete)
 
 **Goal:** a repo whose skeleton matches ARCHITECTURE.md v2.0, a frozen clock that cannot
 be bypassed, a Principal whose scopes match D26, and a provider layer that fails loudly
 at startup instead of mid-demo. TDD throughout: test first (RED), implement (GREEN), refactor.
 
 ### 0.1 Repo hygiene
-- [ ] Branch `feat/m0-foundation` off main
-- [ ] Delete v1.1 dead code: `src/agent/intents.py` (D11a removed the classifier)
-- [ ] Delete v1.1 dirs that no longer exist in the v2.0 layout: `src/agent/nodes/`,
+- [x] Branch `feat/m0-foundation` off main
+- [x] Delete v1.1 dead code: `src/agent/intents.py` (D11a removed the classifier)
+- [x] Delete v1.1 dirs that no longer exist in the v2.0 layout: `src/agent/nodes/`,
       `src/agent/pipelines/`, `src/models/`, `src/tools/`
-- [ ] Create v2.0 dirs: `src/providers/`, `src/domain/`, `src/api/`, `src/agent/tools/`,
+- [x] Create v2.0 dirs: `src/providers/`, `src/domain/`, `src/api/`, `src/agent/tools/`,
       `src/knowledge/vectorstore/`, `scripts/`
-- [ ] `pyproject.toml` for ruff + pytest config (line length, coverage gate, markers)
-- [ ] Update `requirements.txt`: fastapi, uvicorn, sse-starlette, langgraph-checkpoint-sqlite,
+- [x] `pyproject.toml` for ruff + pytest config (line length, coverage gate, markers)
+- [x] Update `requirements.txt`: fastapi, uvicorn, sse-starlette, langgraph-checkpoint-sqlite,
       langchain-openai, ragas, datasets, itsdangerous, tzdata; drop pandas if openpyxl suffices
-- [ ] Project `CLAUDE.md` declaring the production branch and what is already in place
-- [ ] Rewrite `.env.example` for dual providers, Chroma Cloud, three roles
+- [x] Project `CLAUDE.md` declaring the production branch and what is already in place
+- [x] Rewrite `.env.example` for dual providers, Chroma Cloud, three roles
 
 ### 0.2 `src/clock.py` — the only time source (D6, D22)
-- [ ] RED: `tests/unit/test_clock.py` — AS_OF parses as Asia/Kolkata and is a Sunday
-- [ ] RED: business-hours arithmetic across the Sunday boundary
+- [x] RED: `tests/unit/test_clock.py` — AS_OF parses as Asia/Kolkata and is a Sunday
+- [x] RED: business-hours arithmetic across the Sunday boundary
       (Sun 11:00 + 4 business hours = Mon 13:00 IST)
-- [ ] RED: `business_hours_between` is zero across a whole weekend
-- [ ] RED: `add_business_days` skips Sat and Sun
-- [ ] RED: a clock built with no AS_OF configured raises, with no wall-clock fallback
-- [ ] GREEN: implement `clock.py`
-- [ ] Guard test: `datetime.now()` / `date.today()` / `time.time()` absent from `src/`
+- [x] RED: `business_hours_between` is zero across a whole weekend
+- [x] RED: `add_business_days` skips Sat and Sun
+- [x] RED: a clock built with no AS_OF configured raises, with no wall-clock fallback
+- [x] GREEN: implement `clock.py`
+- [x] Guard test: `datetime.now()` / `date.today()` / `time.time()` absent from `src/`
 
 ### 0.3 `src/auth/principal.py` — scopes matching D26
-- [ ] RED: `support_agent` lacks `read:ops_detection`; only `ops_manager` has it
-- [ ] RED: only `ops_manager` has `write:approve_credit`
-- [ ] RED: `support_agent` has `read:own_queue`; customer does not
-- [ ] RED: a customer without `account_id` raises; staff with one raises
-- [ ] RED: six seeded personas build with the right scopes and queues
-- [ ] GREEN: update `principal.py`, add `personas.py`
+- [x] RED: `support_agent` lacks `read:ops_detection`; only `ops_manager` has it
+- [x] RED: only `ops_manager` has `write:approve_credit`
+- [x] RED: `support_agent` has `read:own_queue`; customer does not
+- [x] RED: a customer without `account_id` raises; staff with one raises
+- [x] RED: six seeded personas build with the right scopes and queues
+- [x] GREEN: update `principal.py`, add `personas.py`
 
 ### 0.4 `src/config.py` — typed settings
-- [ ] RED: required keys missing fails loudly; provider selection is validated
-- [ ] RED: `embedding_identity` renders `{provider}/{model}/{dim}` for collection naming
-- [ ] GREEN: implement; move from `src/utils/config.py`
+- [x] RED: required keys missing fails loudly; provider selection is validated
+- [x] RED: `embedding_identity` renders `{provider}/{model}/{dim}` for collection naming
+- [x] GREEN: implement; move from `src/utils/config.py`
 
 ### 0.5 `src/providers/` — dual provider layer (D9a)
-- [ ] RED: `ChatProvider` / `EmbeddingProvider` protocol conformance for both impls
-- [ ] RED: Gemini and OpenRouter both build from config; unknown provider raises
-- [ ] RED: retry honours `Retry-After` and backs off with jitter
-- [ ] RED: query-embedding cache is keyed by `(embedding_identity, sha256(text))`
-- [ ] GREEN: `base.py`, `gemini.py`, `openrouter.py`, `registry.py`
-- [ ] `scripts/preflight.py`: verify every configured slug with a 1-token call, fail loudly
-- [ ] Live check: tool-calling reliability on Gemini's OpenAI-compatible endpoint
-      (open item 1 — decides whether we need the native client)
+- [x] RED: `ChatProvider` / `EmbeddingProvider` protocol conformance for both impls
+- [x] RED: Gemini and OpenRouter both build from config; unknown provider raises
+- [x] RED: retry honours `Retry-After` and backs off with jitter
+- [x] RED: query-embedding cache is keyed by `(embedding_identity, sha256(text))`
+- [x] GREEN: `base.py`, `gemini.py`, `openrouter.py`, `registry.py`
+- [x] `scripts/preflight.py`: verify every configured slug with a 1-token call, fail loudly
+- [x] Live check: tool-calling reliability on Gemini's OpenAI-compatible endpoint.
+      **CLOSED.** Works once each tool call's thought_signature is echoed back;
+      the native google-genai client is not needed. Both providers pass 8/8 live.
 
 ### 0.6 Close out
-- [ ] `pytest` green, coverage >= 80% on touched modules
-- [ ] `ruff check` clean
-- [ ] Commit in reviewable batches, push, open PR against `main`
+- [x] `pytest` green, coverage >= 80% on touched modules
+- [x] `ruff check` clean
+- [x] Commit in reviewable batches, push, open PR against `main`
 
 ---
 
