@@ -108,48 +108,56 @@ class TestForgeryAndReplay:
 
     def test_a_handle_from_another_run_is_refused(self, store):
         handle = store.mint(EvidenceKind.ORDER_SNAPSHOT, ORDER_PAYLOAD)
-        with open_evidence_store(
-            run_id="run_b",
-            principal=persona("northstar_customer"),
-            connection=store.connection,
-        ) as other_run:
+        with (
+            open_evidence_store(
+                run_id="run_b",
+                principal=persona("northstar_customer"),
+                connection=store.connection,
+            ) as other_run,
+            pytest.raises(EvidenceScopeError),
+        ):
             # Same principal, same database, different run. Handles do not
             # survive a conversation boundary.
-            with pytest.raises(EvidenceScopeError):
-                other_run.read(handle, expect=EvidenceKind.ORDER_SNAPSHOT)
+            other_run.read(handle, expect=EvidenceKind.ORDER_SNAPSHOT)
 
     def test_a_handle_minted_for_another_principal_is_refused_within_the_same_run(self, store):
         handle = store.mint(EvidenceKind.ORDER_SNAPSHOT, ORDER_PAYLOAD)
-        with open_evidence_store(
-            run_id="run_a",
-            principal=persona("lumenworks_customer"),
-            connection=store.connection,
-        ) as other_principal:
+        with (
+            open_evidence_store(
+                run_id="run_a",
+                principal=persona("lumenworks_customer"),
+                connection=store.connection,
+            ) as other_principal,
+            pytest.raises(EvidenceScopeError),
+        ):
             # This is the leak that matters: the handle is in model context, and
             # the context is what a prompt injection can reach.
-            with pytest.raises(EvidenceScopeError):
-                other_principal.read(handle, expect=EvidenceKind.ORDER_SNAPSHOT)
+            other_principal.read(handle, expect=EvidenceKind.ORDER_SNAPSHOT)
 
     def test_staff_cannot_consume_a_customers_handle_either(self, store):
         # Staff read every account, but not every *handle*. Scope on read is
         # about provenance, not authorisation: an agent must re-fetch under
         # their own identity so the trace shows who looked.
         handle = store.mint(EvidenceKind.ORDER_SNAPSHOT, ORDER_PAYLOAD)
-        with open_evidence_store(
-            run_id="run_a", principal=persona("maya_agent"), connection=store.connection
-        ) as staff:
-            with pytest.raises(EvidenceScopeError):
-                staff.read(handle, expect=EvidenceKind.ORDER_SNAPSHOT)
+        with (
+            open_evidence_store(
+                run_id="run_a", principal=persona("maya_agent"), connection=store.connection
+            ) as staff,
+            pytest.raises(EvidenceScopeError),
+        ):
+            staff.read(handle, expect=EvidenceKind.ORDER_SNAPSHOT)
 
     def test_a_scope_failure_does_not_reveal_whether_the_handle_exists(self, store):
         handle = store.mint(EvidenceKind.ORDER_SNAPSHOT, ORDER_PAYLOAD)
-        with open_evidence_store(
-            run_id="run_a",
-            principal=persona("lumenworks_customer"),
-            connection=store.connection,
-        ) as other:
-            with pytest.raises(EvidenceScopeError) as denied:
-                other.read(handle, expect=EvidenceKind.ORDER_SNAPSHOT)
+        with (
+            open_evidence_store(
+                run_id="run_a",
+                principal=persona("lumenworks_customer"),
+                connection=store.connection,
+            ) as other,
+            pytest.raises(EvidenceScopeError) as denied,
+        ):
+            other.read(handle, expect=EvidenceKind.ORDER_SNAPSHOT)
         # The payload is the thing being protected; the message must not carry
         # any of it.
         assert "ORD-1001" not in str(denied.value)

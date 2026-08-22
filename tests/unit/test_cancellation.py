@@ -23,7 +23,12 @@ from src.domain.calculators.cancellation import (
     compute_cancellation_fee,
 )
 from src.domain.calculators.errors import NoBasis, WrongEvidence
-from src.domain.evidence import EvidenceKind, open_evidence_store
+from src.domain.evidence import (
+    EvidenceKind,
+    EvidenceKindError,
+    EvidenceNotFound,
+    open_evidence_store,
+)
 from src.domain.resolver import PolicyResolver
 
 NORTHSTAR_CANCEL = "northstar_logistics_enterprise_agreement::§2"
@@ -178,13 +183,12 @@ class TestEvidenceDiscipline:
         store, _, resolution = chain("northstar_customer", "ORD-1001")
         # The refusal that forces the chain. Without it the model can compute a
         # fee having never consulted precedence.
-        with pytest.raises(Exception) as refused:
+        with pytest.raises(EvidenceNotFound, match="ORD-1001"):
             compute_cancellation_fee(store, snapshot_id="ORD-1001", resolution_id=resolution)
-        assert "ORD-1001" in str(refused.value)
 
     def test_a_resolution_handle_cannot_stand_in_for_a_snapshot(self, chain):
         store, _, resolution = chain("northstar_customer", "ORD-1001")
-        with pytest.raises(Exception):
+        with pytest.raises(EvidenceKindError):
             compute_cancellation_fee(store, snapshot_id=resolution, resolution_id=resolution)
 
     def test_a_resolution_for_the_wrong_topic_is_refused(self, chain):
@@ -245,7 +249,6 @@ class TestEvidenceDiscipline:
 
     def test_the_snapshot_and_the_resolution_must_agree_on_the_account(self, chain, db_path):
         store, snapshot, _ = chain("northstar_customer", "ORD-1001")
-        principal = persona("northstar_customer")
         with PolicyResolver.open(db_path) as resolver:
             foreign = resolver.resolve("cancellation_fee", persona("lumenworks_customer"))
         handle = store.mint(EvidenceKind.POLICY_RESOLUTION, foreign.to_payload())
