@@ -41,7 +41,11 @@ known-first-party = ["src", "app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --strict-markers --strict-config"
+# `-m "not live"` is the default the marker below advertises and that
+# CLAUDE.md documents. Without it every plain `pytest` hits real providers
+# and fails outright on a machine with no API keys. An explicit `-m live`
+# on the command line overrides it.
+addopts = "-q --strict-markers --strict-config -m 'not live'"
 markers = [
     "live: hits a real provider or Chroma Cloud; deselected by default (-m 'not live')",
     "eval: golden-set or RAGAS run; slow and LLM-judged",

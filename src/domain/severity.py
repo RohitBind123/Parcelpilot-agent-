@@ -30,26 +30,31 @@ SEVERITIES: Final = ("P1", "P2", "P3")
 
 #: Below this, severity is not trusted enough to quote a target from (D25).
 #:
-#: Calibrated in M4 against the five open tickets, six samples each
-#: (`scripts/calibrate_severity.py`), closing ARCHITECTURE open item 5:
+#: Calibrated against the five open tickets with `scripts/calibrate_severity.py`,
+#: closing ARCHITECTURE open item 5. Twelve samples each:
 #:
 #:   TKT-501  P1 by guard          TKT-505  P1 by guard
-#:   TKT-502  P2  confidence 1.00, same answer every run
-#:   TKT-503  P3  confidence 1.00, same answer every run
-#:   TKT-504  P2 or P3, flipping between runs, confidence 0.80-0.90
+#:   TKT-502  P2  0.95-1.00, same answer every run
+#:   TKT-503  P3  1.00,      same answer every run
+#:   TKT-504  P2 or P3, flipping between runs, 0.80-0.90
 #:
-#: TKT-504 is genuinely undecided by the definitions - a status display that
-#: lags is either a materially degraded feature or a minor defect, and section 2
-#: does not say which. 0.95 sits in the gap, so that ticket routes to a human
-#: and the other two do not.
+#: TKT-504 is genuinely undecided by section 2 - a lagging status display is
+#: either a materially degraded feature or a minor defect, and the policy does
+#: not say which. The threshold belongs in the gap so that ticket routes to a
+#: human and the other two do not.
 #:
-#: The caveat matters as much as the number. The model reported 0.85 while
-#: giving different answers on identical input, so self-reported confidence
-#: tracks its own stability only loosely - it happens to dip here, and a model
-#: that flipped while reporting 1.00 would pass. Sampling the classifier three
-#: times and requiring agreement is the stronger signal; it is left for M11,
-#: where the eval harness can show whether it actually helps.
-CONFIDENCE_THRESHOLD: Final = 0.95
+#: Set to 0.95 in M4 from six samples, where TKT-502 never reported below 1.00.
+#: Twelve samples found it as low as 0.95 - exactly on the line, with no margin,
+#: which is a threshold waiting to misfire. 0.93 is the measured midpoint and
+#: leaves both sides room.
+#:
+#: The caveat matters as much as the number, and M6 supplied the evidence for
+#: it: a live test asserting one sample of TKT-504 sits below the threshold
+#: flaked, because the model reported 0.85 while giving different answers on
+#: identical input. Self-reported confidence tracks its own stability only
+#: loosely. Sampling three times and requiring agreement is the stronger
+#: signal; it is left for M11, where the eval harness can show whether it helps.
+CONFIDENCE_THRESHOLD: Final = 0.93
 
 _SEVERITY_CLAUSE: Final = "support_policy_v3_current::§2"
 
