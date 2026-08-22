@@ -25,7 +25,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 - [x] M4  Consistency check + severity inference
 - [x] M5  Tools with typed evidence handles + ACL projection
 - [x] M6  Agent graph (LangGraph StateGraph), CLI harness
-- [ ] M7  Fact-block composition + claim-level grounding gate
+- [x] M7  Fact-block composition + claim-level grounding gate
 - [ ] M8  FastAPI + SSE + confirmation gate
 - [ ] M9  Streamlit client: threads, trace panel, conflict badge, confirm card, resume
 - [ ] M10 Ops page + proactive detection
@@ -576,6 +576,73 @@ Beacon     3h credit -> eligible; asks which shipment rather than inventing a fe
 ### 6.5 Close out — done
 - [x] End-to-end grows a compiled-graph section driven by a scripted model
 - [x] 958 offline tests green (8s), 38 live green; 93.6% coverage; lint clean
+
+
+---
+
+## M7 — Fact-block composition and the grounding gate (complete)
+
+**Goal:** make a confidently wrong number structurally impossible. Python
+renders the facts; the model writes prose around them; a gate checks every claim
+in that prose before anyone sees it.
+
+### 7.1 Fact block (D15a) — done
+- [x] Rendered from evidence handles, never from prose
+- [x] Null renders as unknown, never INR 0; a formula where no number exists
+- [x] The override row carries what the losing clause would have said
+- [x] A blocking conflict becomes a Caution, with KI-211's instruction verbatim
+- [x] Tier 4 appears under Excluded and never becomes citable
+- [x] Serialisable for the `facts.block` SSE event (M8)
+
+### 7.2 Grounding gate (D16) — done
+- [x] Figures checked in Python, **as (value, unit) pairs**
+- [x] A figure quoted from a cited clause passes; one from nowhere is a hard
+      failure that no re-retrieval can rescue
+- [x] Identifiers are not quantities: ORD-1001, §3.1, v3, **P1**
+- [x] Claims graded against evidence, never as substrings
+- [x] An extractor that fails or returns nothing yields UNCHECKED, never a pass
+- [x] Sufficiency structural, decided before the extractor is consulted
+- [x] Repair targeted (the failing claim is the query), no query repeated,
+      subset check, budget 2, exit is escalation
+
+### 7.3 Escalation (D27) — done
+- [x] A record naming the specific gap, question verbatim, evidence chain,
+      sources actually read
+- [x] GS-024 asserts no settings page; GS-025 escalates on different vocabulary
+
+### 7.4 Close out — done
+- [x] `NOT_YET_COMPUTABLE` 4 → 1 (only GS-031, waiting on M10)
+- [x] 1107 offline tests green, 93% coverage, lint clean
+- [x] `scripts/demo_m7.py`
+
+### Bugs found and fixed during M7
+
+Both gate defects were found by the demo, not by the tests — and both are the
+worst kind, one letting a wrong answer through and one dropping a right one.
+
+- **Bare numbers made the tier-4 trap passable.** Policy v3 §3 itself says
+  "1 business day", so the figure 1 is grounded by a citable source, and a gate
+  checking bare numbers accepts "the target is 1 hour" — the deprecated answer
+  GS-017 exists to catch. Figures are now (value, unit) pairs.
+- **The support check rejected a correct claim.** difflib at 0.85 scores
+  "waived" against "waives" at 0.833, so "the fee is waived" was reported
+  unsupported against the clause that waives it. Replaced with suffix rules
+  plus a doubled-consonant collapse.
+- **Severity labels counted as quantities.** "P1" contributed the figure 1.
+- **I nearly shipped an unsound checker.** A deterministic
+  `asserts(claims, forbidden)` for the golden set's `must_not_assert` reported
+  "the carrier status is verified before saying a pickup did not occur" as
+  asserting the pickup did not occur. Its first test passed only because I
+  picked a forbidden string with no vocabulary overlap — a weakened test hiding
+  a broken check. Removed, with a comment saying why and a test asserting its
+  absence. The judgement is semantic and belongs in M11.
+
+### The obligation from M4 and M5, discharged
+
+The gate grades claims, not strings. A fourth instance of the substring mistake
+appeared while writing these tests — an assertion that `"0 minutes"` never
+appears, which `"30 minutes"` contains — which is a reasonable amount of
+evidence that the design decision was the right one.
 
 
 ---
