@@ -45,7 +45,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 ## Still open (none block starting)
 
 - [x] ~~Tool-calling reliability on Gemini~~ — closed in M0 via thought_signature echo
-- [ ] Write and review the ~25-clause `params` baseline (M2)
+- [x] Write and review the ~25-clause `params` baseline (M2)
 - [ ] Chroma Cloud database provisioning + free-tier limits (M2)
 - [ ] Numeric severity-confidence cut-off — behaviour settled, value not (M4)
 - [ ] Railway topology: one service or two (M12)
@@ -164,6 +164,88 @@ validated against `^ACCT-\d{3}$` before interpolation.
 - [x] `pytest` green, coverage >= 80%
 - [x] `ruff check` clean
 - [x] Commit in reviewable batches, push, open PR against `main`
+
+---
+
+## M2 — Clause registry, vector store, retrieval (in progress)
+
+**Goal:** the six PDFs become a typed authority spine plus a searchable collection.
+This is where the assignment is won or lost: a wrong `params` value is a wrong
+answer carrying a correct-looking citation.
+
+**Parsing approach** (skill `regex-vs-llm-structured-text`, adapted for D10):
+regex-first with per-clause confidence scoring. The skill's LLM-validates-the-
+low-confidence-tail step is deliberately **not** adopted — a model call at build
+time makes the committed index non-reproducible. The hand-reviewed baseline is
+the validator instead, and it validates everything rather than a tail. Confidence
+scoring still earns its place: it tells the reviewer where to look.
+
+### 2.1 Text normalisation
+- [x] RED: pypdf's doubled spaces and mid-word line breaks are repaired
+- [x] RED: bullet glyphs, non-breaking spaces and soft hyphens normalise
+- [x] RED: normalisation is idempotent
+- [x] GREEN: `src/knowledge/pdftext.py`
+
+### 2.2 Topic taxonomy
+- [x] `src/knowledge/topics.py`: the curated enum from ARCHITECTURE §5.3
+- [x] RED: every topic is reachable from at least one clause in the corpus
+- [x] RED: no clause ends up untagged
+
+### 2.3 Clause segmentation and metadata
+- [x] RED: 6 documents parse; each yields the expected clause count
+- [x] RED: tier, account scope, status and effective dates come from the header,
+      not from a hardcoded table keyed on filename
+- [x] RED: Policy v2 is tier 4 and marked DEPRECATED; agreements are tier 1 and
+      account-scoped; SOP v4 and Policy v3 are tier 2
+- [x] RED: clause text is verbatim, and `clause_id` is stable across runs
+- [x] GREEN: `src/knowledge/clause_parser.py`
+
+### 2.4 Typed params + reviewed baseline (D24)
+- [x] RED: the discriminating params extract correctly —
+      SOP `free_window_minutes=30` / `fee_after_window_inr=250`,
+      Northstar `waiver=true` / `fee_inr=0`,
+      LumenWorks `overrides=false` on cancellation but
+      `threshold_hours=4` / `credit_inr=300` on credits
+- [x] RED: the nine v2/v3 response-target cells extract as a typed grid
+- [x] RED: confidence scoring flags a clause whose numbers did not parse
+- [x] **REVIEW GATE:** print the baseline as a readable table for sign-off
+- [x] GREEN: `clause_params_baseline.yaml` committed
+- [x] RED: `test_clause_params.py` asserts `ingest(pdf) == baseline`, clause by clause
+
+### 2.5 Registry persistence
+**Deviation:** no `chunks` table. The clauses are one paragraph each (longest is 73
+words, median 44), so a chunker would only ever split a rule away from the numbers that
+qualify it. The clause *is* the chunk; `clause_topics` carries the tagging that a
+chunk table would otherwise have held.
+- [x] `clauses` and `clause_topics` tables added to `schema.sql`
+- [x] RED: registry rebuild is idempotent and account-scoped reads work
+- [x] GREEN: extend `etl.py` / add `src/knowledge/ingest.py`
+
+### 2.6 Vector store (D20)
+- [ ] `VectorStore` protocol; `ChromaLocalStore` and `ChromaCloudStore`
+- [ ] RED: the ACL predicate is injected inside the store, not passed by callers
+- [ ] RED: collection name is namespaced by embedding identity
+- [ ] RED: a customer query never returns another account's agreement
+- [ ] `scripts/provision_chroma.py`; confirm free-tier limits
+
+### 2.7 Hybrid retrieval
+- [ ] RED: BM25 built in memory from the clause table at startup
+- [ ] RED: RRF fusion prefers a clause both retrievers agree on
+- [ ] RED: an exact clause reference ("SOP v4 §1") is found by BM25 when dense misses
+- [ ] GREEN: `src/knowledge/retriever.py`
+
+### 2.8 End-to-end (per user instruction: test E2E up to what is implemented)
+- [ ] `tests/integration/test_end_to_end.py` — grows each milestone
+- [ ] RED: build DB + registry + index from the real files, then as each persona
+      run a real retrieval and assert tier ordering and account scoping
+- [ ] RED: a Northstar session retrieving `cancellation_fee` sees Northstar §2 and
+      SOP v4 §1, and never the LumenWorks agreement
+- [ ] RED: Policy v2 is retrievable but never in the citable set
+- [ ] `scripts/demo_m2.py` so the pipeline is runnable by hand
+
+### 2.9 Close out
+- [ ] `pytest` green, coverage >= 80%; `ruff check` clean
+- [ ] Commit in reviewable batches, push, open PR against `main`
 
 ---
 

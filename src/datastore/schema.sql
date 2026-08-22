@@ -13,7 +13,8 @@
 
 PRAGMA foreign_keys = ON;
 
-DROP VIEW  IF EXISTS v_orders_enriched;
+DROP TABLE IF EXISTS clause_topics;
+DROP TABLE IF EXISTS clauses;
 DROP TABLE IF EXISTS tickets;
 DROP TABLE IF EXISTS orders;
 DROP TABLE IF EXISTS accounts;
@@ -86,3 +87,51 @@ CREATE INDEX idx_tickets_assigned_to  ON tickets (assigned_to);
 CREATE INDEX idx_tickets_status       ON tickets (status);
 -- The ops scan reads open tickets per account; the composite serves it directly.
 CREATE INDEX idx_tickets_status_account ON tickets (status, account_id);
+
+
+-- ---------------------------------------------------------------------------
+-- The clause registry: the authority spine (Tiers 1-5).
+--
+-- Precedence is a sort on `tier` over rows this table already carries, rather
+-- than a judgement made over whatever retrieval happened to return. That is
+-- the difference between an override that is provable and one that is
+-- contingent on recall.
+--
+-- `account_id` does double duty. NULL means the clause applies to every
+-- account; a value means the clause is both private to that account and its
+-- Tier 1 authority. One predicate therefore satisfies the ACL and the
+-- precedence rule at once.
+
+CREATE TABLE clauses (
+    clause_id      TEXT PRIMARY KEY,
+    doc_id         TEXT    NOT NULL,
+    doc_title      TEXT    NOT NULL,
+    clause_ref     TEXT    NOT NULL,
+    title          TEXT    NOT NULL,
+    tier           INTEGER NOT NULL CHECK (tier BETWEEN 0 AND 5),
+    -- NULL = applies to all accounts. Otherwise this clause is private to it.
+    account_id     TEXT             REFERENCES accounts (account_id),
+    status         TEXT    NOT NULL,
+    effective_from TEXT,
+    effective_to   TEXT,
+    superseded_by  TEXT,
+    -- Typed values the calculators read. JSON because the shape differs per
+    -- topic; the reviewed baseline in clause_params_baseline.yaml is what
+    -- keeps it honest.
+    params         TEXT    NOT NULL DEFAULT '{}',
+    text           TEXT    NOT NULL
+) WITHOUT ROWID;
+
+-- Topics are a join table rather than a JSON array on `clauses`, because the
+-- resolver's central query is "every clause about this subject, visible to
+-- this account, ordered by tier" - and that wants an index.
+CREATE TABLE clause_topics (
+    clause_id TEXT NOT NULL REFERENCES clauses (clause_id),
+    topic     TEXT NOT NULL,
+    PRIMARY KEY (clause_id, topic)
+) WITHOUT ROWID;
+
+CREATE INDEX idx_clauses_tier         ON clauses (tier);
+CREATE INDEX idx_clauses_account      ON clauses (account_id);
+CREATE INDEX idx_clauses_doc          ON clauses (doc_id);
+CREATE INDEX idx_clause_topics_topic  ON clause_topics (topic);

@@ -15,6 +15,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
+
 from src.auth.personas import get_persona, to_principal
 from src.auth.principal import build_principal
 from src.datastore.etl import WORKBOOK_PATH, build_database

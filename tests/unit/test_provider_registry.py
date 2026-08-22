@@ -8,6 +8,7 @@ afternoon. Both are about the demo not falling over.
 from __future__ import annotations
 
 import pytest
+
 from src.config import EmbeddingConfig, Settings
 from src.providers.base import ProviderError
 from src.providers.cache import CachedEmbeddings, SqliteEmbeddingCache
