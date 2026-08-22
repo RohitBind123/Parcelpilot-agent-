@@ -647,6 +647,83 @@ evidence that the design decision was the right one.
 
 ---
 
+## Interlude — index read path (before M8) — complete
+
+Found while checking the working tree was clean before starting M8: `git status`
+showed the committed Chroma index modified and an untracked 962 KB
+`data/threads.db`. Neither is cosmetic.
+
+### What is actually wrong
+
+- [x] **The read path can create collections.** `ChromaStore._collection` uses
+      `get_or_create_collection`, and `count()` and `query()` both go through
+      it. Query the store under an embedding identity that was never indexed
+      and Chroma creates a second, empty collection *inside the committed
+      index file*, `count()` returns 0, and `query()` returns `[]`. The agent
+      then reports "no citable source" and escalates. That is infrastructure
+      absence rendered as data absence — the failure this codebase is built to
+      refuse — and it corrupts the reproducibility artifact on the way past.
+      Measured, not suspected: a wrong-identity `get_or_create_collection`
+      against a copy of the committed index left two collections on disk where
+      there had been one.
+- [x] **`query()` fetches the collection three times** — once for the
+      emptiness guard, once for `min(k, count())`, once to search.
+- [x] **`data/threads.db` is untracked and not ignored.** It is the LangGraph
+      checkpointer: runtime conversation state, written by every run and every
+      demo. It must never be committed.
+
+### What is *not* wrong, and why the tracker says so
+
+The index diff is 434176 → 434176 bytes and every meaningful table is
+byte-identical (19 embeddings, 226 metadata rows, 1 collection, 2 segments).
+The only change is Chroma's internal `acquire_write` lock table, 4 → 24 rows,
+one row appended per `PersistentClient` construction. My first reading was that
+the read path took a write lock per query; measuring it showed the row is added
+at client open and not per collection fetch. That churn is inherent to opening
+a local Chroma client and is left alone — but it is exactly the noise that hid
+the real defect, since a permanently dirty binary is a diff nobody reads.
+
+### The fix
+
+- [x] RED: querying an identity that was never indexed raises `VectorStoreError`
+      naming the identity, rather than returning `[]`
+- [x] RED: a failed read leaves the collection list on disk unchanged
+- [x] RED: `count()` on an unindexed identity is 0 and creates nothing
+- [x] GREEN: split read access (`get_collection`) from write access
+      (`get_or_create_collection`); `upsert` keeps the latter, `count` and
+      `query` take the former
+- [x] Fetch the collection once per `query()`
+- [x] Rewrite `test_switching_identity_selects_an_empty_collection_not_stale_vectors`
+      to assert the stronger property. It currently asserts `second.count() == 0`,
+      which is true but blesses create-on-read; the property it means to protect
+      is that switching identity never returns the other model's vectors *and*
+      never silently looks like an empty index.
+- [x] Ignore `data/threads.db`; restore the index to its committed bytes
+- [x] Full suite green, lint clean, before M8 starts
+
+### Outcome
+
+1111 tests green (up 4), 93% coverage, lint clean, `data/` unmodified by a full
+suite run. Verified against the real committed index rather than only a fixture:
+the correct identity finds its 19 vectors, the wrong one raises naming both the
+collection and the identity, and the collection list on disk is unchanged where
+before the same sequence left a second, empty collection behind.
+
+`_safe_dense` is the part worth noting. It already caught broad exceptions with
+the comment "an unbuilt collection or an unreachable host should cost recall,
+not the whole answer" - a fallback written for a case that `query()` made
+unreachable by swallowing it. The docstring described the intended behaviour
+and the code one layer down quietly prevented it. Retrieval now degrades to
+lexical with a logged warning, which is what that comment always claimed.
+
+`count()` deliberately does not raise where `query()` does. `count()` answers
+"is there an index", asked by the build scripts before they do anything, and
+zero is true. `query()` answers "which clauses match", where `[]` would assert
+that a search happened.
+
+
+---
+
 ## Review
 
 _To be filled in as milestones complete._
