@@ -1,11 +1,12 @@
 """The whole pipeline, from the supplied files to retrieved evidence.
 
-This file grows with each milestone. Today it covers M1 to M4: the workbook and
+This file grows with each milestone. Today it covers M1 to M5: the workbook and
 the six PDFs are built into SQLite, the registry is indexed into a real Chroma
 collection and a real BM25 index, each persona asks a real question through the
-real retriever, and the whole answering chain - snapshot, resolve, compute,
+real retriever, the whole answering chain - snapshot, resolve, compute,
 cross-check - runs on a database built in this test rather than the committed
-one, so a stale artefact cannot make it pass.
+one, and finally the same chain runs again through the tool layer as a model
+would drive it, over a toolset bound to each persona.
 
 Nothing here is mocked except the embedding model, which is a deterministic
 hashing stand-in so the suite runs offline (D20). Every other layer is the one
@@ -19,8 +20,13 @@ enforced in three separate places.
 
 from __future__ import annotations
 
+import json
+from contextlib import contextmanager
+
 import pytest
 
+from src.agent.tools.context import open_tool_context
+from src.agent.tools.registry import build_toolset
 from src.auth.personas import get_persona, to_principal
 from src.datastore.etl import WORKBOOK_PATH, build_database
 from src.datastore.repo import AccessDenied, open_repository
@@ -385,3 +391,104 @@ def _consistency(pipeline, persona_id: str, subject: str):
             store=store, repository=repo, resolver=PolicyResolver(repo.connection)
         )
         return checker.check(snapshot_id=snapshot)
+
+
+class TestTheToolLayerOverTheSamePipeline:
+    """M5, driven the way a model will drive it in M6.
+
+    Every call here goes through a tool that was built for one Principal, over
+    the index and database this test constructed. The point is that the answers
+    are the same as the ones the domain layer gives directly - the tool layer
+    adds a schema and a refusal vocabulary, and changes no arithmetic.
+    """
+
+    def test_a_customer_answers_their_own_question_end_to_end(self, pipeline):
+        with _session(pipeline, "northstar_customer") as tools:
+            snapshot = tools["get_order"](order_id="ORD-1001").data["snapshot_id"]
+            resolution = tools["resolve_policy"](
+                topic="cancellation_fee", snapshot_id=snapshot
+            ).data["resolution_id"]
+            fee = tools["compute_cancellation_fee"](
+                snapshot_id=snapshot, resolution_id=resolution
+            ).data
+            conflict = tools["check_data_consistency"](snapshot_id=snapshot).data
+
+        assert fee["fee_inr"] == 0
+        assert fee["governing_clause"] == NORTHSTAR_CANCELLATION
+        assert SOP_CANCELLATION in fee["overridden_clauses"]
+        # And the answer is not complete without the caveat.
+        assert conflict["blocking"] is True
+
+    def test_the_other_customer_gets_the_other_answer_through_the_same_tools(self, pipeline):
+        with _session(pipeline, "lumenworks_customer") as tools:
+            snapshot = tools["get_order"](order_id="ORD-2001").data["snapshot_id"]
+            resolution = tools["resolve_policy"](topic="cancellation_fee").data["resolution_id"]
+            fee = tools["compute_cancellation_fee"](
+                snapshot_id=snapshot, resolution_id=resolution
+            ).data
+        assert fee["fee_inr"] == 250
+        assert fee["governing_clause"] == SOP_CANCELLATION
+
+    def test_a_staff_session_walks_a_ticket_to_an_sla_answer(self, pipeline):
+        with _session(pipeline, "maya_agent") as tools:
+            ticket = tools["get_ticket"](ticket_id="TKT-501").data["snapshot_id"]
+            account = tools["get_account"](account_id="ACCT-001").data["account_snapshot_id"]
+            resolution = tools["resolve_policy"](
+                topic="first_response_target", snapshot_id=ticket
+            ).data["resolution_id"]
+            sla = tools["sla_first_response_status"](
+                snapshot_id=ticket, account_snapshot_id=account, resolution_id=resolution
+            ).data
+
+        # P1 by guard, and never a claimed breach - there is no first_response_at.
+        assert sla["severity"] == "P1"
+        assert sla["severity_inferred"] is False
+        assert sla["measurable"] is False
+
+    def test_the_cross_account_probe_is_denied_over_the_real_stack(self, pipeline):
+        with _session(pipeline, "lumenworks_customer") as tools:
+            denial = tools["get_order"](order_id="ORD-1001")
+        rendered = json.dumps(denial.to_payload())
+        for leaked in ("ACCT-001", "Northstar", "BOOKED", "SwiftShip"):
+            assert leaked not in rendered
+
+    def test_retrieval_through_the_tool_respects_the_same_predicate(self, pipeline):
+        with _session(pipeline, "beacon_customer") as tools:
+            clauses = tools["search_policy"](query="cancellation fee waiver").data["clauses"]
+        found = {c["clause_id"] for c in clauses}
+        assert NORTHSTAR_CANCELLATION not in found
+        assert LUMENWORKS_CANCELLATION not in found
+        assert SOP_CANCELLATION in found
+
+    def test_only_staff_can_reach_the_deprecated_policy_and_it_is_marked(self, pipeline):
+        with _session(pipeline, "priya_manager") as tools:
+            clauses = tools["search_policy"](
+                query="first response target",
+                topic="first_response_target",
+                include_deprecated=True,
+            ).data["clauses"]
+        by_id = {c["clause_id"]: c for c in clauses}
+        assert by_id[POLICY_V2]["citable"] is False
+
+    def test_the_three_schemas_are_three_schemas(self, pipeline):
+        with (
+            _session(pipeline, "axis_customer") as customer,
+            _session(pipeline, "maya_agent") as agent,
+            _session(pipeline, "priya_manager") as manager,
+        ):
+            names = (set(customer), set(agent), set(manager))
+        assert names[0] < names[1] <= names[2]
+        assert "my_queue" not in names[0]
+        assert "scan_support_health" not in names[2]  # M10 builds it
+
+
+@contextmanager
+def _session(pipeline, persona_id: str):
+    """A toolset over the pipeline this test built, keyed by name."""
+    with open_tool_context(
+        persona(persona_id),
+        run_id=persona_id,
+        db_path=pipeline["db_path"],
+        retriever=pipeline["retriever"],
+    ) as context:
+        yield {tool.name: tool for tool in build_toolset(context)}
