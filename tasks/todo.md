@@ -167,6 +167,84 @@ validated against `^ACCT-\d{3}$` before interpolation.
 
 ---
 
+## M2 — Clause registry, vector store, retrieval (in progress)
+
+**Goal:** the six PDFs become a typed authority spine plus a searchable collection.
+This is where the assignment is won or lost: a wrong `params` value is a wrong
+answer carrying a correct-looking citation.
+
+**Parsing approach** (skill `regex-vs-llm-structured-text`, adapted for D10):
+regex-first with per-clause confidence scoring. The skill's LLM-validates-the-
+low-confidence-tail step is deliberately **not** adopted — a model call at build
+time makes the committed index non-reproducible. The hand-reviewed baseline is
+the validator instead, and it validates everything rather than a tail. Confidence
+scoring still earns its place: it tells the reviewer where to look.
+
+### 2.1 Text normalisation
+- [ ] RED: pypdf's doubled spaces and mid-word line breaks are repaired
+- [ ] RED: bullet glyphs, non-breaking spaces and soft hyphens normalise
+- [ ] RED: normalisation is idempotent
+- [ ] GREEN: `src/knowledge/pdftext.py`
+
+### 2.2 Topic taxonomy
+- [ ] `src/knowledge/topics.py`: the curated enum from ARCHITECTURE §5.3
+- [ ] RED: every topic is reachable from at least one clause in the corpus
+- [ ] RED: no clause ends up untagged
+
+### 2.3 Clause segmentation and metadata
+- [ ] RED: 6 documents parse; each yields the expected clause count
+- [ ] RED: tier, account scope, status and effective dates come from the header,
+      not from a hardcoded table keyed on filename
+- [ ] RED: Policy v2 is tier 4 and marked DEPRECATED; agreements are tier 1 and
+      account-scoped; SOP v4 and Policy v3 are tier 2
+- [ ] RED: clause text is verbatim, and `clause_id` is stable across runs
+- [ ] GREEN: `src/knowledge/clause_parser.py`
+
+### 2.4 Typed params + reviewed baseline (D24)
+- [ ] RED: the discriminating params extract correctly —
+      SOP `free_window_minutes=30` / `fee_after_window_inr=250`,
+      Northstar `waiver=true` / `fee_inr=0`,
+      LumenWorks `overrides=false` on cancellation but
+      `threshold_hours=4` / `credit_inr=300` on credits
+- [ ] RED: the nine v2/v3 response-target cells extract as a typed grid
+- [ ] RED: confidence scoring flags a clause whose numbers did not parse
+- [ ] **REVIEW GATE:** print the baseline as a readable table for sign-off
+- [ ] GREEN: `clause_params_baseline.yaml` committed
+- [ ] RED: `test_clause_params.py` asserts `ingest(pdf) == baseline`, clause by clause
+
+### 2.5 Registry persistence
+- [ ] `clauses` and `chunks` tables added to `schema.sql`
+- [ ] RED: registry rebuild is idempotent and account-scoped reads work
+- [ ] GREEN: extend `etl.py` / add `src/knowledge/ingest.py`
+
+### 2.6 Vector store (D20)
+- [ ] `VectorStore` protocol; `ChromaLocalStore` and `ChromaCloudStore`
+- [ ] RED: the ACL predicate is injected inside the store, not passed by callers
+- [ ] RED: collection name is namespaced by embedding identity
+- [ ] RED: a customer query never returns another account's agreement
+- [ ] `scripts/provision_chroma.py`; confirm free-tier limits
+
+### 2.7 Hybrid retrieval
+- [ ] RED: BM25 built in memory from the clause table at startup
+- [ ] RED: RRF fusion prefers a clause both retrievers agree on
+- [ ] RED: an exact clause reference ("SOP v4 §1") is found by BM25 when dense misses
+- [ ] GREEN: `src/knowledge/retriever.py`
+
+### 2.8 End-to-end (per user instruction: test E2E up to what is implemented)
+- [ ] `tests/integration/test_end_to_end.py` — grows each milestone
+- [ ] RED: build DB + registry + index from the real files, then as each persona
+      run a real retrieval and assert tier ordering and account scoping
+- [ ] RED: a Northstar session retrieving `cancellation_fee` sees Northstar §2 and
+      SOP v4 §1, and never the LumenWorks agreement
+- [ ] RED: Policy v2 is retrievable but never in the citable set
+- [ ] `scripts/demo_m2.py` so the pipeline is runnable by hand
+
+### 2.9 Close out
+- [ ] `pytest` green, coverage >= 80%; `ruff check` clean
+- [ ] Commit in reviewable batches, push, open PR against `main`
+
+---
+
 ## Review
 
 _To be filled in as milestones complete._
