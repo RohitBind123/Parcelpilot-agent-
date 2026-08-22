@@ -23,6 +23,7 @@ import pytest
 from src.config import get_settings
 from src.domain.severity import (
     CONFIDENCE_THRESHOLD,
+    SEVERITIES,
     ClassifierVerdict,
     SeverityDefinitions,
     SeverityVerdict,
@@ -75,7 +76,7 @@ class Stub:
         return self.verdict
 
 
-def verdict(severity="P2", confidence=0.9, span="Major feature unavailable"):
+def verdict(severity="P2", confidence=1.0, span="Major feature unavailable"):
     return ClassifierVerdict(severity=severity, confidence=confidence, matched_span=span)
 
 
@@ -230,3 +231,69 @@ class TestTheGuardsStillHoldAlone:
         assert isinstance(got, SeverityVerdict)
         with pytest.raises((AttributeError, TypeError)):
             got.severity = "P3"  # type: ignore[misc]
+
+
+class TestTheClassifierHandlesAMisbehavingModel:
+    """`_to_verdict` is the boundary where a provider response becomes a typed
+    verdict. Every path out of it that is not a clean verdict must be None, so
+    `infer_severity` records "the classifier returned no verdict" rather than
+    building a grading out of whatever came back."""
+
+    @pytest.fixture
+    def to_verdict(self):
+        from src.domain.severity_llm import _to_verdict
+
+        return _to_verdict
+
+    def test_a_clean_mapping_becomes_a_verdict(self, to_verdict):
+        got = to_verdict({"severity": "P2", "confidence": 0.9, "matched_span": "Major feature"})
+        assert (got.severity, got.confidence) == ("P2", 0.9)
+
+    def test_json_arriving_as_a_string_is_parsed(self, to_verdict):
+        # Providers differ on whether structured output comes back decoded.
+        raw = '{"severity": "P3", "confidence": 1.0, "matched_span": "how-to question"}'
+        assert to_verdict(raw).severity == "P3"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "not json at all",
+            {"confidence": 0.9, "matched_span": "x"},
+            {"severity": "P2", "matched_span": "x"},
+            {"severity": "P2", "confidence": "very", "matched_span": "x"},
+            None,
+            [],
+        ],
+    )
+    def test_anything_unusable_becomes_none_rather_than_a_partial_verdict(self, to_verdict, raw):
+        assert to_verdict(raw) is None
+
+    def test_an_unusable_response_reaches_infer_severity_as_undetermined(self, definitions):
+        class Garbage:
+            def classify(self, subject, description, defs):
+                from src.domain.severity_llm import _to_verdict
+
+                return _to_verdict("not json at all")
+
+        got = infer_severity(
+            "Bulk upload fails", "It fails.", definitions=definitions, classifier=Garbage()
+        )
+        assert got.severity is None
+        assert not got.is_trusted
+
+    def test_the_prompt_carries_the_definitions_and_asks_for_the_span(self, definitions):
+        from src.domain.severity_llm import _prompt
+
+        prompt = _prompt("Subject", "Description", definitions)
+        assert definitions.spans["P1"] in prompt
+        assert definitions.clause_id in prompt
+        assert "verbatim" in prompt.lower()
+
+    def test_the_schema_constrains_the_severity_to_the_three_the_policy_defines(self):
+        # Belt to the validation's braces: the model is asked for an enum, and
+        # the answer is checked against SEVERITIES anyway, because a provider
+        # that ignores the schema must not be able to widen the vocabulary.
+        from src.domain.severity_llm import _SCHEMA
+
+        assert _SCHEMA["properties"]["severity"]["enum"] == list(SEVERITIES)
+        assert _SCHEMA["additionalProperties"] is False

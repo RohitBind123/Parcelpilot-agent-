@@ -23,9 +23,9 @@ from src.providers.base import ChatProvider
 
 logger = logging.getLogger(__name__)
 
-#: Small on purpose. The answer is three fields, and an uncapped request
-#: reserves the whole budget against the account balance on OpenRouter.
-MAX_TOKENS: Final = 300
+# No max_tokens here on purpose: `complete_structured` goes through `complete`,
+# which always sends a cap (`config.max_output_tokens`). A second constant would
+# imply a guard this module does not provide.
 
 _SCHEMA: Final[dict[str, Any]] = {
     "type": "object",
