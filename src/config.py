@@ -54,6 +54,10 @@ class ChatConfig:
     base_url: str
     cheap_model: str
     strong_model: str
+    #: Applied when a caller does not set max_tokens. OpenRouter reserves the
+    #: requested budget against the account balance before running, so an
+    #: uncapped request 402s on a low balance even when the reply is short.
+    max_output_tokens: int = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +132,7 @@ class Settings(BaseSettings):
     session_secret: str = ""
     log_level: str = "INFO"
     repair_budget: int = 2
+    max_output_tokens: int = 4096
     request_timeout_seconds: float = 30.0
 
     @model_validator(mode="after")
@@ -173,6 +178,7 @@ class Settings(BaseSettings):
             base_url=getattr(self, f"{p}_base_url"),
             cheap_model=getattr(self, f"{p}_model_cheap"),
             strong_model=getattr(self, f"{p}_model_strong"),
+            max_output_tokens=self.max_output_tokens,
         )
 
     def embedding_config(self) -> EmbeddingConfig:

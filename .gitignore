@@ -49,3 +49,6 @@ Thumbs.db
 
 # CalQuity-supplied hiring material — keep local, do not publish
 project_docs/*.docx
+
+# Derived cache, never committed (see src/providers/cache.py)
+data/embedding_cache.db*
