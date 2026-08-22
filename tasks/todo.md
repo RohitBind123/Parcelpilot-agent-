@@ -112,6 +112,57 @@ at startup instead of mid-demo. TDD throughout: test first (RED), implement (GRE
 
 ---
 
+## M1 — Data layer (in progress)
+
+**Goal:** the workbook becomes a queryable, ACL-enforcing SQLite database whose
+NULLs survive intact, and whose snapshot time is verified against config rather
+than trusted. TDD throughout.
+
+### 1.1 Schema
+- [ ] `src/datastore/schema.sql`: `accounts`, `orders`, `tickets`, `meta`
+- [ ] Foreign keys declared and `PRAGMA foreign_keys=ON` on every connection
+- [ ] Indexes for the real query shapes: `orders.account_id`, `tickets.account_id`,
+      `tickets.assigned_to`, `tickets.status`
+- [ ] Timestamps stored as ISO 8601 **with offset**; a naive value is never written
+- [ ] Nullable columns stay nullable — no `NOT NULL DEFAULT 0` on money or timestamps
+
+### 1.2 ETL (`src/datastore/etl.py`)
+- [ ] RED: all four sheets parse; row counts are exactly 4 / 6 / 7
+- [ ] RED: `AS_OF` is extracted from the README sheet, not hardcoded
+- [ ] RED: naive workbook datetimes are localised to Asia/Kolkata, never left naive
+- [ ] RED: absent values stay NULL — `pickup_actual_at` on ORD-1001,
+      `cancellation_requested_at` on ORD-2002, `historical_resolution` on open tickets
+- [ ] RED: xlsx booleans coerce to 0/1, and `premium_support` survives round-trip
+- [ ] RED: rebuild is idempotent — running twice yields identical rows
+- [ ] GREEN: implement; `scripts/build_db.py` CLI
+
+### 1.3 Account-scoped views (`src/datastore/views.sql`)
+- [ ] RED: a customer connection's temp views expose only its own rows
+- [ ] RED: the view set covers orders, tickets and accounts
+- [ ] GREEN: scoped connection factory binds views from the Principal at connect time
+
+### 1.4 Repository (`src/datastore/repo.py`)
+- [ ] RED: typed frozen row models; datetimes come back tz-aware
+- [ ] RED: a customer reading another account's order raises, and is loggable
+- [ ] RED: a customer cannot widen scope by passing `account_id`
+- [ ] RED: staff read any account; `my_queue` filters by `assigned_to`
+- [ ] RED: `query_tickets` is a parameterised builder, never free-text SQL
+- [ ] RED: batch fetch by ids is one round-trip, not one per id
+- [ ] GREEN: implement
+
+### 1.5 Invariants that tie config to data
+- [ ] RED: `meta.as_of` equals `clock.as_of()` — config and workbook cannot drift
+- [ ] RED: every persona `account_id` exists in `accounts`
+- [ ] RED: every `tickets.assigned_to` matches a `support_agent` persona `queue_key`
+- [ ] RED: ground-truth row assertions from findings §10 (statuses, fees, fault flags)
+
+### 1.6 Close out
+- [ ] `pytest` green, coverage >= 80%
+- [ ] `ruff check` clean
+- [ ] Commit in reviewable batches, push, open PR against `main`
+
+---
+
 ## Review
 
 _To be filled in as milestones complete._
