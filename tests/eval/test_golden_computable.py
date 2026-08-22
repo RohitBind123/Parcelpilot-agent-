@@ -5,11 +5,12 @@ here, so the expectations in this file are the ones that were signed off. If a
 verdict changes there, this fails - which is the whole reason the golden set was
 written before the resolver.
 
-Eighteen of the thirty-two are computable today: cancellation, service credit,
-SLA targets and the three conflicts. The rest need the tool layer (M5) or answer
-composition (M7), and the coverage test at the bottom asserts that the uncovered
-set is exactly those and shrinks as milestones land - so this file cannot
-quietly stop testing something.
+Twenty-eight of the thirty-two are computable today: cancellation, service
+credit, SLA targets, the three conflicts, and everything that turns on which
+tools a role is given. The remaining four need answer composition (M7) or
+proactive detection (M10), and the coverage test at the bottom asserts that the
+uncovered set is exactly those and shrinks as milestones land - so this file
+cannot quietly stop testing something.
 
 Nothing is mocked. The database is the committed one, the clauses are the real
 registry, and the arithmetic is the arithmetic that will ship.
@@ -17,11 +18,15 @@ registry, and the arithmetic is the arithmetic that will ship.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 
+from src.agent.tools.base import ToolDenied
+from src.agent.tools.context import open_tool_context
+from src.agent.tools.registry import PROJECTION, build_toolset
 from src.auth.personas import get_persona, to_principal
 from src.config import get_settings
 from src.datastore.repo import open_repository
@@ -34,29 +39,34 @@ from src.domain.resolver import PolicyResolver
 from src.domain.severity import SeverityVerdict, deterministic_severity
 
 GOLDEN = Path(__file__).resolve().parent / "golden_set.yaml"
+POLICY_V2 = "support_policy_v2_deprecated::§-"
 
 CANCELLATION = ["GS-001", "GS-002", "GS-003", "GS-004", "GS-005", "GS-006"]
 CREDIT = ["GS-007", "GS-008", "GS-009", "GS-010"]
 SLA = ["GS-011", "GS-012", "GS-013", "GS-014", "GS-015"]
 CONFLICT = ["GS-019", "GS-020", "GS-021"]
+#: Entries whose acceptance is a property of the tool layer: which tools exist,
+#: what they refuse, and what a refusal is allowed to say.
+TOOLS = [
+    "GS-016",
+    "GS-018",
+    "GS-022",
+    "GS-023",
+    "GS-026",
+    "GS-027",
+    "GS-028",
+    "GS-029",
+    "GS-030",
+    "GS-032",
+]
 
 #: Entries whose acceptance needs a milestone that has not landed. Named
 #: individually so the list is a to-do rather than a shrug.
 NOT_YET_COMPUTABLE = {
-    "GS-016": "abstract SLA question with no ticket; needs the tool layer (M5)",
     "GS-017": "tier discipline at the answer surface; needs composition (M7)",
-    "GS-018": "deliberate tier-4 read; needs the tool layer (M5)",
-    "GS-022": "known-issue matching; needs retrieval in the tool layer (M5)",
-    "GS-023": "plan capability; needs the tool layer (M5)",
     "GS-024": "no-source escalation; needs the escalation flow (M7)",
     "GS-025": "no-source escalation; needs the escalation flow (M7)",
-    "GS-026": "cross-account denial; covered by repository tests, asserted end to end in M5",
-    "GS-027": "cross-account retrieval denial; asserted in M2 end-to-end tests",
-    "GS-028": "prompt injection; needs tool projection (M5)",
-    "GS-029": "scope refusal; needs tool projection (M5)",
-    "GS-030": "my_queue; covered by repository tests, asserted end to end in M5",
     "GS-031": "ops detection; needs scan_support_health (M10)",
-    "GS-032": "role projection; needs tool projection (M5)",
 }
 
 
@@ -68,6 +78,63 @@ def golden() -> dict[str, dict]:
 @pytest.fixture(scope="module")
 def db_path():
     return get_settings().db_path
+
+
+@pytest.fixture(scope="module")
+def index(tmp_path_factory, db_path):
+    """A real hybrid retriever over the committed registry.
+
+    Offline: the embeddings are the deterministic hashing stand-in, so the
+    lexical half does the work the dense half would. What is under test in
+    these entries is the ACL predicate and the tier filter, and both sit
+    underneath ranking.
+    """
+    from src.knowledge.registry import load_chunks
+    from src.knowledge.retriever import BM25Index, HybridRetriever
+    from src.knowledge.vectorstore.chroma import ChromaLocalStore
+    from tests.support.embeddings import HashingEmbeddings
+
+    chunks = load_chunks(db_path)
+    dense = ChromaLocalStore(
+        embeddings=HashingEmbeddings(), persist_dir=tmp_path_factory.mktemp("golden") / "index"
+    )
+    dense.upsert(chunks)
+    return HybridRetriever(dense=dense, lexical=BM25Index(chunks))
+
+
+@pytest.fixture
+def toolset(db_path, index):
+    """A live toolset per persona, over a context scoped to that persona."""
+    opened = []
+
+    def build(persona_id: str):
+        cm = open_tool_context(
+            to_principal(get_persona(persona_id)),
+            run_id=persona_id,
+            db_path=db_path,
+            retriever=index,
+        )
+        context = cm.__enter__()
+        opened.append(cm)
+        tools = build_toolset(context)
+        return _Toolset(tools)
+
+    yield build
+    for cm in opened:
+        cm.__exit__(None, None, None)
+
+
+class _Toolset:
+    """Indexable by name, iterable for the absence assertions."""
+
+    def __init__(self, tools):
+        self._by_name = {t.name: t for t in tools}
+
+    def __getitem__(self, name):
+        return self._by_name[name]
+
+    def __iter__(self):
+        return iter(self._by_name.values())
 
 
 def principal_for(entry: dict):
@@ -372,9 +439,163 @@ def _consistency(entry: dict, db_path):
         return checker.check(snapshot_id=snapshot)
 
 
+class TestTheToolLayer:
+    """GS-016 to GS-032: the entries that turn on which tools a role is given.
+
+    Nine of the ten are answered by the schema rather than by a tool body. That
+    is the claim the design makes - containment is a property of what exists,
+    not of what refuses - and these are where it is cashed.
+    """
+
+    def test_an_abstract_sla_question_needs_no_ticket(self, golden, toolset):
+        # GS-016. LumenWorks asks about their guarantee in general, so there is
+        # nothing to snapshot; resolve_policy alone answers it.
+        entry = golden["GS-016"]
+        data = toolset("lumenworks_customer")["resolve_policy"](topic="first_response_target").data
+        assert data["governing_clause"] == entry["expect"]["governing"][0], entry["derivation"]
+        assert data["overridden"] == entry["expect"]["overridden"]
+        assert data["is_override"] is True
+
+    def test_the_deprecated_policy_is_reachable_on_purpose_and_only_by_staff(self, golden, toolset):
+        # GS-018. "What changed between v2 and v3?" cannot be answered without
+        # reading a superseded document, which is a different act from citing
+        # one by accident - so it takes a flag, and the flag is staff-only.
+        entry = golden["GS-018"]
+        staff = toolset("priya_manager")["search_policy"]
+        default = staff(query="first response target", topic="first_response_target").data
+        assert POLICY_V2 not in {c["clause_id"] for c in default["clauses"]}
+
+        deliberate = staff(
+            query="first response target",
+            topic="first_response_target",
+            include_deprecated=True,
+        ).data
+        found = {c["clause_id"]: c for c in deliberate["clauses"]}
+        assert POLICY_V2 in found, entry["derivation"]
+        # Reachable, and marked as what it is.
+        assert found[POLICY_V2]["citable"] is False
+        assert found[entry["expect"]["governing"][0]]["citable"] is True
+
+    def test_a_customer_has_no_way_to_ask_for_it(self, golden, toolset):
+        params = {p.name for p in _tool(toolset("lumenworks_customer"), "search_policy").params}
+        assert "include_deprecated" not in params
+
+    def test_the_bulk_upload_failure_resolves_to_the_known_issue(self, golden, toolset):
+        # GS-022. 4,200 rows is inside the supported 5,000 and above KI-208's
+        # ~3,000 threshold, so this is the open defect and not a plan limit.
+        entry = golden["GS-022"]
+        data = toolset("lumenworks_customer")["resolve_policy"](topic="bulk_upload_limit").data
+        assert data["governing_clause"] == "product_operations_guide_and_known_issues::§1"
+        assert "product_operations_guide_and_known_issues::KI-208" in data["supporting"]
+
+        clauses = toolset("lumenworks_customer")["search_policy"](
+            query=entry["question"], topic="bulk_upload_limit"
+        ).data["clauses"]
+        by_id = {c["clause_id"]: c for c in clauses}
+        assert set(entry["expect"]["governing"]) <= set(by_id), entry["derivation"]
+        assert (
+            entry["expect"]["workaround"]
+            in by_id["product_operations_guide_and_known_issues::KI-208"]["text"]
+        )
+
+    def test_the_plan_that_lacks_the_feature_gets_the_capability_clause(self, golden, toolset):
+        # GS-023. Beacon is on Standard, where Bulk Upload is not included.
+        # Relevance is account-scoped, not just topical: explaining why large
+        # files fail answers a question this customer cannot yet ask.
+        entry = golden["GS-023"]
+        data = toolset("beacon_customer")["resolve_policy"](topic="plan_capability").data
+        assert data["governing_clause"] == entry["expect"]["governing"][0], entry["derivation"]
+        account = toolset("beacon_customer")["get_account"]().data
+        assert account["plan"] == entry["check"]["plan"]
+
+    def test_a_cross_account_lookup_is_denied_and_leaks_nothing(self, golden, toolset):
+        # GS-026.
+        entry = golden["GS-026"]
+        result = toolset("lumenworks_customer")["get_order"](order_id=entry["subject"])
+        assert isinstance(result, ToolDenied)
+        assert result.reason.value == entry["expect"]["reason"]
+        rendered = json.dumps(result.to_payload())
+        for leaked in entry["expect"]["must_not_leak"]:
+            assert leaked not in rendered, entry["derivation"]
+
+    def test_another_accounts_agreement_is_unreachable_by_search(self, golden, toolset):
+        # GS-027. Asked for by name, and the predicate is applied server-side
+        # inside the store, so naming it changes nothing.
+        entry = golden["GS-027"]
+        clauses = toolset("beacon_customer")["search_policy"](query=entry["question"]).data[
+            "clauses"
+        ]
+        rendered = json.dumps(clauses)
+        for forbidden in entry["expect"]["must_not_cite"]:
+            assert forbidden not in rendered, entry["derivation"]
+        assert "ACCT-001" not in rendered
+        assert not [c for c in clauses if c["clause_id"].startswith("northstar")]
+        # And the general rule is still findable, so the answer is not empty.
+        assert entry["expect"]["governing"][0] in {c["clause_id"] for c in clauses}
+
+    def test_the_word_waives_is_not_by_itself_a_leak(self, golden, toolset):
+        # GS-027 also lists 'waive' and 'waived' under must_not_leak, and at
+        # this layer that cannot be a substring check: SOP v4 §1 is general
+        # policy every customer may read, and it says "unless a customer
+        # agreement explicitly waives the cancellation fee".
+        #
+        # What must not happen is Beacon being told that *someone else's*
+        # agreement waives the fee - a property of the composed answer, not of
+        # the retrieved set. Asserted here as the enforceable half, with the
+        # rest deferred to the M7 grounding gate. Second instance of the same
+        # lesson as GS-019: these expectations are about asserted claims, and a
+        # substring filter over evidence flags correct answers.
+        clauses = toolset("beacon_customer")["search_policy"](
+            query=golden["GS-027"]["question"]
+        ).data["clauses"]
+        waiving = [c for c in clauses if "waive" in c["text"].lower()]
+        assert waiving, "the general SOP does mention waivers; that is not the leak"
+        assert all(
+            c["clause_id"].startswith("cancellation_and_service_credit_sop") for c in waiving
+        )
+
+    def test_the_prompt_injection_asks_for_a_tool_that_is_not_there(self, golden, toolset):
+        # GS-028. The refusal is structural: the toolset was bound before the
+        # message was read, so there is no code path from this text to a tool.
+        entry = golden["GS-028"]
+        available = {t.name for t in toolset("northstar_customer")}
+        assert entry["expect"]["tool_absent"] not in available, entry["derivation"]
+        assert not available & {"scan_support_health", "explain_finding", "query_tickets"}
+
+    def test_an_agent_cannot_approve_a_credit(self, golden, toolset):
+        # GS-029. Not an ACL breach - a role that lacks the scope. The answer
+        # should cite the clause that says so.
+        entry = golden["GS-029"]
+        assert entry["expect"]["tool_absent"] not in {t.name for t in toolset("maya_agent")}
+        approval = toolset("maya_agent")["resolve_policy"](
+            topic="credit_approval", account_id="ACCT-002"
+        ).data
+        assert approval["governing_clause"] == entry["expect"]["governing"][0], entry["derivation"]
+
+    def test_the_queue_is_split_by_assignee(self, golden, toolset):
+        # GS-030.
+        entry = golden["GS-030"]
+        data = toolset("maya_agent")["my_queue"]().data
+        found = {t["ticket_id"] for t in data["tickets"]}
+        assert found == set(entry["expect"]["ticket_ids"]), entry["derivation"]
+        assert not found & set(entry["expect"]["must_not_include"])
+
+    def test_an_agent_has_no_ops_scan(self, golden, toolset):
+        # GS-032. Same absence as GS-028, reached from the other side of the
+        # role boundary - which is why the projection matrix carries a row for
+        # a tool this milestone does not build.
+        entry = golden["GS-032"]
+        assert entry["expect"]["tool_absent"] not in {t.name for t in toolset("maya_agent")}
+        assert PROJECTION[entry["expect"]["tool_absent"]] == frozenset({"ops_manager"})
+
+
+def _tool(tools, name):
+    return next(t for t in tools if t.name == name)
+
+
 class TestCoverage:
     def test_every_entry_is_either_covered_or_explicitly_deferred(self, golden):
-        covered = set(CANCELLATION + CREDIT + SLA + CONFLICT)
+        covered = set(CANCELLATION + CREDIT + SLA + CONFLICT + TOOLS)
         deferred = set(NOT_YET_COMPUTABLE)
         assert covered | deferred == set(golden)
         assert not covered & deferred, "an entry is both covered and deferred"
@@ -382,6 +603,6 @@ class TestCoverage:
     def test_the_deferred_list_shrinks_as_milestones_land(self, golden):
         # A reminder with teeth: when a milestone lands, its entries must move
         # out of NOT_YET_COMPUTABLE or this number stops being true. M4 took
-        # three out.
-        assert len(NOT_YET_COMPUTABLE) == 14
+        # three out, M5 ten more; the last four are composition and detection.
+        assert len(NOT_YET_COMPUTABLE) == 4
         assert all(reason for reason in NOT_YET_COMPUTABLE.values())

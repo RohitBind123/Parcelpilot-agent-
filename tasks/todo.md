@@ -23,7 +23,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 - [x] M2.5 **Golden-set review gate** — 32 answers signed off
 - [x] M3  Precedence resolver + deterministic calculators
 - [x] M4  Consistency check + severity inference
-- [ ] M5  Tools with typed evidence handles + ACL projection
+- [x] M5  Tools with typed evidence handles + ACL projection
 - [ ] M6  Agent graph (LangGraph ReAct), CLI harness
 - [ ] M7  Fact-block composition + claim-level grounding gate
 - [ ] M8  FastAPI + SSE + confirmation gate
@@ -440,6 +440,70 @@ M3's own tests, because no M3 calculator reads that topic.
 - **A grounding gate must work on claims, not substrings.** KI-211's
   instruction contains "pickup did not occur" as a prohibition of saying it. A
   forbidden-phrase filter would flag the one correct answer. Noted for M7.
+
+
+---
+
+## M5 — Tools with typed evidence handles and ACL projection (complete)
+
+**Goal:** the containment mechanism. An unauthorised query is not refused at
+runtime — it is absent from the schema the model is given, because tools are
+curried with the Principal before the first LLM call.
+
+### 5.1 Tool primitives — done
+- [x] `Tool` renders its own OpenAI function schema; no framework dependency
+- [x] `ToolError` is returned, not raised, and names the tool that mints a
+      missing handle (`Param.produced_by`)
+- [x] A denial carries a reason code and nothing about what was denied, and is
+      indistinguishable from "no such record"
+- [x] An internal fault never puts its traceback in model context
+
+### 5.2 Projection matrix — done
+- [x] All sixteen tools as data, diffed row by row against ARCHITECTURE §4.3
+- [x] `ops_manager` is a strict superset of `support_agent`
+- [x] The five unbuilt tools are named with the milestone that adds each
+- [x] `build_toolset(context)` takes one argument, so a toolset cannot be built
+      for one identity over a repository opened for another
+- [x] A startup check fails the import if the matrix and the builders disagree
+
+### 5.3–5.6 Eleven tools — done
+- [x] Three genuinely different schemas, and different *parameters*: a
+      customer's `get_order` has no `account_id`, `search_policy` no
+      `include_deprecated`
+- [x] Lookups mint handles; a denied read mints nothing
+- [x] `my_queue` splits Maya's three from Rohit's four
+- [x] The calculators have no `order_id` parameter at all
+- [x] `sla_first_response_status` derives severity rather than accepting it
+
+### 5.7–5.8 Golden set and close out — done
+- [x] Ten entries through the tool layer; `NOT_YET_COMPUTABLE` 14 → 4
+- [x] End-to-end runs the tool chain over the index and database it built
+- [x] `scripts/demo_m5.py` prints the three schemas and walks a chain
+- [x] 885 tests green, 93% coverage; `ruff check` and `format` clean
+
+### Bugs found and fixed during M5
+
+- **`ToolError.missing_prerequisite` was unreachable.** The generic
+  required-argument check in `Tool.__call__` fired first, so the model got
+  "missing required argument(s) ['resolution_id']" with no indication of where
+  one comes from — losing the property the whole handle design exists to
+  create. Fixed at the schema level with `Param.produced_by`; the dead helper
+  was removed rather than left as a second way to say the same thing.
+- **`ToolContext.severity_classifier` was referenced and never defined.** No
+  unit test exercised the SLA tool's wiring; the end-to-end test found it on
+  its first run. Covered from both sides now.
+- **`search_policy` reported "unavailable" before validating its topic.** A bad
+  topic is the caller's mistake and is actionable; "unavailable" is not
+  recoverable, so the order stopped the model fixing an error it had made.
+
+### Findings worth carrying forward
+
+- **Second `must_not_*` substring collision.** GS-027 forbids 'waive' leaking to
+  Beacon, and SOP v4 §1 — general policy every customer may read — contains the
+  word. As with GS-019's `must_not_assert`, the expectation is about an asserted
+  claim, and a substring filter over evidence flags the correct answer. **M7's
+  grounding gate must work on claims, not strings.** Two independent instances
+  now; this is a design requirement, not a test quirk.
 
 
 ---
