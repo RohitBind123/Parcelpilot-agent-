@@ -20,8 +20,8 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 - [x] M0  Repo hygiene, config, `clock.py`, provider preflight
 - [x] M1  Data layer: ETL, schema, account-scoped views
 - [x] M2  Clause registry + ingest; `params` baseline; Chroma provisioning; tool-calling check
-- [~] M2.5 **Golden-set review gate** — 32 answers drafted and arithmetic-verified; **awaiting your sign-off**
-- [ ] M3  Precedence resolver + deterministic calculators
+- [x] M2.5 **Golden-set review gate** — 32 answers signed off
+- [x] M3  Precedence resolver + deterministic calculators
 - [ ] M4  Consistency check + severity inference
 - [ ] M5  Tools with typed evidence handles + ACL projection
 - [ ] M6  Agent graph (LangGraph ReAct), CLI harness
@@ -277,7 +277,7 @@ ships. `tests/integration/test_vectorstore_live.py` covers the hosted path.
 
 ## M2.5 — Golden-set review gate (D28)
 
-**Status: drafted, awaiting sign-off.** Nothing depends on the verdicts yet, and
+**Status: signed off.** Nothing depends on the verdicts yet, and
 M3 should not start until they have been read. The risk D28 names is a
 misreading shared between the golden set and the implementation, which is
 invisible because both agree; building the resolver against unreviewed
@@ -290,7 +290,7 @@ expectations is exactly how that happens.
 - [x] `tests/eval/test_golden_set_integrity.py` — 21 tests, structure and coverage
 - [x] Corruption detection proven: bad arithmetic, wrong deadline, unknown
       clause and unknown persona are each caught and reported
-- [ ] **YOUR SIGN-OFF** on the 32 verdicts
+- [x] **Signed off** — M3 builds against these
 
 Coverage against ARCHITECTURE §18's named cases:
 
@@ -304,6 +304,68 @@ Coverage against ARCHITECTURE §18's named cases:
 | Cross-account probes denied | GS-026, GS-027 |
 | Prompt injection at a staff tool | GS-028 |
 | "What changed between v2 and v3?" | GS-018 |
+
+---
+
+## M3 — Precedence resolver and deterministic calculators (complete)
+
+**Goal:** every number, date and eligibility verdict in an answer is computed in
+Python from `params` on a resolved clause, and arrives with the clause that
+justifies it. The model gets to plan; it never gets to do arithmetic.
+
+### 3.1 Evidence store and typed handles (D13a)
+- [x] `evidence(evidence_id, kind, run_id, principal_hash, payload_json, ...)`
+- [x] RED: minted server-side; `mint` has no `evidence_id` parameter
+- [x] RED: a handle from another run is refused
+- [x] RED: a handle minted for another Principal is refused, staff included
+- [x] RED: `kind` is enforced on every read
+- [x] RED: a scope denial carries no payload detail
+- [x] RED: provenance is recorded at mint and survives two hops
+- [x] GREEN: `src/domain/evidence.py`
+
+### 3.2 Precedence resolver
+- [x] RED: tier 4 excluded with a reason; never governing for any persona
+- [x] RED: lowest surviving tier wins; the loser is recorded (GS-001)
+- [x] RED: `overrides: false` honoured and still cited (GS-002)
+- [x] RED: `overrides: null` is a baseline, not a decliner
+- [x] RED: an account never resolves against another account's clause
+- [x] RED: same-tier conflict from a synthetic fixture
+- [x] RED: effective-date window respected
+- [x] GREEN: `src/domain/resolver.py`
+
+**Deviations from the architecture's sketch, both forced by the data:**
+- `deferred` — a Tier 1 clause that declines to override needs its own bucket.
+  `context_only` would file a live agreement beside a deprecated policy.
+- `supporting` — three Tier 2 clauses carry `first_response_target` and only one
+  states a grid. Treating every same-tier clause as a rival authority reports an
+  unresolved conflict on every SLA question in the pack.
+- `GENERAL_POLICY` sentinel — staff must name an account, but "what changed
+  between v2 and v3?" has none. Reachable, never accidental.
+
+### 3.3 Cancellation fee calculator — GS-001 to GS-006 all pass
+- [x] Status before money; the waiver does not rescue a PICKED_UP shipment
+- [x] Not cancellable reports `fee_inr: None`, never 0
+- [x] Attribution is to the clause that decided *this* answer
+
+### 3.4 Service credit calculator — GS-007 to GS-010 all pass
+- [x] Threshold replacement in both directions, with the default reported alongside
+- [x] `lower_of` is a cap, not a choice
+- [x] Unknown shipment fee yields None plus the formula, never a number
+- [x] Approval line arrives as its own resolution; absent means unknown, not False
+
+### 3.5 SLA calculator — GS-011 to GS-015 all pass
+- [x] Two named P1 triggers by deterministic guard (`src/domain/severity.py`)
+- [x] 24x7 targets ignore the Sunday; business-hours targets start Monday 09:00
+- [x] `measurable: false` always
+- [x] D25 asymmetry: customer declines and escalates, ops rounds up
+
+### 3.6 Golden set wiring
+- [x] `tests/eval/test_golden_computable.py` — 15 entries through the real chain
+- [x] The other 17 are named individually with the milestone that unblocks each
+- [x] `scripts/demo_m3.py`
+
+### 3.7 Close out
+- [x] 614 tests green, 93% coverage; `ruff check` and `format` clean
 
 ---
 

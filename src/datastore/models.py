@@ -9,7 +9,7 @@ it merely read.
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 
 
@@ -26,8 +26,30 @@ def _bool(value: int | None) -> bool:
     return bool(value)
 
 
+def _payload(value: object) -> object:
+    """One row field, in a form json.dumps accepts.
+
+    None stays None. An absent pickup time and a pickup at the epoch are not
+    the same fact, and every downstream consumer - the calculators, the fact
+    block, the trace - depends on being able to tell them apart.
+    """
+    return value.isoformat() if isinstance(value, datetime) else value
+
+
+class _Row:
+    """Shared serialisation for the typed rows.
+
+    A snapshot payload is what a calculator computes from and what the trace
+    renders, so it has to be plain JSON - and it has to preserve None. An
+    absent pickup time and a pickup at the epoch are different facts.
+    """
+
+    def to_payload(self) -> dict[str, object]:
+        return {key: _payload(value) for key, value in asdict(self).items()}
+
+
 @dataclass(frozen=True, slots=True)
-class Account:
+class Account(_Row):
     account_id: str
     account_name: str
     plan: str
@@ -61,7 +83,7 @@ class Account:
 
 
 @dataclass(frozen=True, slots=True)
-class Order:
+class Order(_Row):
     order_id: str
     account_id: str
     carrier: str
@@ -98,7 +120,7 @@ class Order:
 
 
 @dataclass(frozen=True, slots=True)
-class Ticket:
+class Ticket(_Row):
     ticket_id: str
     account_id: str
     created_at: datetime
