@@ -5,12 +5,10 @@ here, so the expectations in this file are the ones that were signed off. If a
 verdict changes there, this fails - which is the whole reason the golden set was
 written before the resolver.
 
-Twenty-eight of the thirty-two are computable today: cancellation, service
-credit, SLA targets, the three conflicts, and everything that turns on which
-tools a role is given. The remaining four need answer composition (M7) or
-proactive detection (M10), and the coverage test at the bottom asserts that the
-uncovered set is exactly those and shrinks as milestones land - so this file
-cannot quietly stop testing something.
+Thirty-one of the thirty-two are computable today. The last one needs proactive
+detection (M10), and the coverage test at the bottom asserts that the uncovered
+set is exactly that and shrinks as milestones land - so this file cannot quietly
+stop testing something.
 
 Nothing is mocked. The database is the committed one, the clauses are the real
 registry, and the arithmetic is the arithmetic that will ship.
@@ -24,6 +22,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+from src.agent.answer import assemble
+from src.agent.escalation import DeclineReason
+from src.agent.escalation import draft as escalation_draft
+from src.agent.facts import compose
+from src.agent.grounding import check_figures
 from src.agent.tools.base import ToolDenied
 from src.agent.tools.context import open_tool_context
 from src.agent.tools.registry import PROJECTION, build_toolset
@@ -47,6 +50,9 @@ SLA = ["GS-011", "GS-012", "GS-013", "GS-014", "GS-015"]
 CONFLICT = ["GS-019", "GS-020", "GS-021"]
 #: Entries whose acceptance is a property of the tool layer: which tools exist,
 #: what they refuse, and what a refusal is allowed to say.
+#: Entries whose acceptance is a property of composition: what the fact block
+#: renders, and what the gate refuses to let through.
+COMPOSITION = ["GS-017", "GS-024", "GS-025"]
 TOOLS = [
     "GS-016",
     "GS-018",
@@ -63,9 +69,6 @@ TOOLS = [
 #: Entries whose acceptance needs a milestone that has not landed. Named
 #: individually so the list is a to-do rather than a shrug.
 NOT_YET_COMPUTABLE = {
-    "GS-017": "tier discipline at the answer surface; needs composition (M7)",
-    "GS-024": "no-source escalation; needs the escalation flow (M7)",
-    "GS-025": "no-source escalation; needs the escalation flow (M7)",
     "GS-031": "ops detection; needs scan_support_health (M10)",
 }
 
@@ -593,9 +596,128 @@ def _tool(tools, name):
     return next(t for t in tools if t.name == name)
 
 
+class TestComposition:
+    """GS-017, GS-024, GS-025: what the block renders and what the gate refuses.
+
+    All three are failures of composition rather than of retrieval or
+    arithmetic. The deprecated target is *found* by search and must not reach
+    the citable set; the two no-source questions have nothing to find, and the
+    failure is answering them anyway.
+    """
+
+    def test_the_deprecated_target_never_becomes_a_citable_source(self, golden, toolset):
+        # GS-017. Policy v3 says Enterprise P1 = 30 minutes 24x7; the deprecated
+        # v2 said 1 hour, and both are excellent lexical matches for the
+        # question. Any answer of "1 hour" means a tier-4 clause reached the
+        # citable set.
+        entry = golden["GS-017"]
+        clauses = toolset("axis_customer")["search_policy"](
+            query=entry["question"], topic="first_response_target"
+        ).data["clauses"]
+        citable = {c["clause_id"] for c in clauses if c["citable"]}
+        assert POLICY_V2 not in citable, entry["derivation"]
+
+        sources = {c["clause_id"]: c["text"] for c in clauses if c["citable"]}
+        block = compose(resolution=None)
+        # The deprecated answer is caught by the *unit*, not by the number.
+        # Policy v3 §3 itself says "1 business day", so the bare figure 1 is
+        # grounded by the citable grid - which is exactly how a gate checking
+        # bare numbers would have let "1 hour" through.
+        assert check_figures("The target is 1 hour.", block, sources) == ((1.0, "hours"),)
+        assert check_figures("The target is 30 minutes, 24x7.", block, sources) == ()
+
+    def test_the_forbidden_answer_is_only_reachable_through_the_excluded_clause(
+        self, golden, toolset
+    ):
+        entry = golden["GS-017"]
+        assert entry["expect"]["forbidden_answers"] == ["1 hour", "60 minutes"]
+        # Reachable deliberately, by staff, with the flag - and marked as not
+        # citable even then.
+        deprecated = toolset("priya_manager")["search_policy"](
+            query=entry["question"], topic="first_response_target", include_deprecated=True
+        ).data["clauses"]
+        found = {c["clause_id"]: c for c in deprecated}
+        assert found[POLICY_V2]["citable"] is False
+        assert "1 hour" in found[POLICY_V2]["text"]
+
+    @pytest.mark.parametrize(
+        ("entry_id", "topic"),
+        [("GS-024", "account_contact"), ("GS-025", "account_contact")],
+    )
+    def test_a_question_with_no_source_has_no_basis_to_answer_from(
+        self, golden, toolset, entry_id, topic
+    ):
+        # GS-024 and GS-025. Two differently worded probes, so a system that
+        # has merely learned "billing questions escalate" fails the second.
+        entry = golden[entry_id]
+        tools = toolset(entry["persona"])
+        clauses = tools["search_policy"](query=entry["question"]).data["clauses"]
+        # Retrieval always returns *something* - the corpus is nineteen clauses
+        # and cosine similarity has no notion of "nothing relevant". What makes
+        # this answerable-or-not is whether a clause governs the topic.
+        resolution = tools["resolve_policy"](topic=topic).data
+        assert resolution["has_basis"] is False, entry["derivation"]
+        assert clauses  # retrieval was not empty; the gap is authority, not recall
+
+    @pytest.mark.parametrize("entry_id", ["GS-024", "GS-025"])
+    def test_it_drafts_a_record_naming_the_gap(self, golden, entry_id):
+        entry = golden[entry_id]
+        record = escalation_draft(
+            principal=to_principal(get_persona(entry["persona"])),
+            thread_id=entry_id,
+            question=entry["question"],
+            reason=DeclineReason.NO_CITABLE_SOURCE,
+            subject=entry["question"].rstrip("?"),
+        )
+        assert entry["expect"]["escalate"] is True
+        assert record.question == entry["question"]
+        assert "corpus" in record.what_is_unresolved
+
+    def test_the_billing_answer_invents_no_procedure(self, golden):
+        # GS-024, the single most valuable question in the set: every SaaS
+        # product has a settings page and a model will happily invent the path.
+        entry = golden["GS-024"]
+        record = escalation_draft(
+            principal=to_principal(get_persona(entry["persona"])),
+            thread_id="gs24",
+            question=entry["question"],
+            reason=DeclineReason.NO_CITABLE_SOURCE,
+            subject=entry["question"].rstrip("?"),
+        )
+        said = f"{record.summary} {record.what_is_unresolved}".lower()
+        for forbidden in entry["expect"]["must_not_assert"]:
+            assert forbidden.lower() not in said
+
+    def test_an_unsupported_answer_is_dropped_rather_than_softened(self, golden):
+        # The exit is escalation, never a degraded answer. A system that trims
+        # an unsupported claim until it passes has become vaguer, not truer.
+        entry = golden["GS-025"]
+        answer = assemble(
+            "We retain shipment records for seven years.",
+            messages=[{"role": "user", "content": entry["question"]}],
+            resolution=None,
+            principal=to_principal(get_persona(entry["persona"])),
+            thread_id="gs25",
+            question=entry["question"],
+            extractor=_Stub("we retain shipment records for seven years"),
+            subject=entry["question"].rstrip("?"),
+        )
+        assert answer.prose == ""
+        assert answer.declined
+        assert "seven years" not in answer.escalation.summary
+
+
+class _Stub:
+    def __init__(self, *claims):
+        self.claims = list(claims)
+
+    def extract(self, prose):
+        return list(self.claims)
+
+
 class TestCoverage:
     def test_every_entry_is_either_covered_or_explicitly_deferred(self, golden):
-        covered = set(CANCELLATION + CREDIT + SLA + CONFLICT + TOOLS)
+        covered = set(CANCELLATION + CREDIT + SLA + CONFLICT + TOOLS + COMPOSITION)
         deferred = set(NOT_YET_COMPUTABLE)
         assert covered | deferred == set(golden)
         assert not covered & deferred, "an entry is both covered and deferred"
@@ -603,6 +725,6 @@ class TestCoverage:
     def test_the_deferred_list_shrinks_as_milestones_land(self, golden):
         # A reminder with teeth: when a milestone lands, its entries must move
         # out of NOT_YET_COMPUTABLE or this number stops being true. M4 took
-        # three out, M5 ten more; the last four are composition and detection.
-        assert len(NOT_YET_COMPUTABLE) == 4
+        # three out, M5 ten, M7 three; GS-031 waits on detection.
+        assert len(NOT_YET_COMPUTABLE) == 1
         assert all(reason for reason in NOT_YET_COMPUTABLE.values())

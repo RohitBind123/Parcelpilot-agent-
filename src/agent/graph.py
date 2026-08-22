@@ -94,6 +94,10 @@ class AgentRun:
     handles: tuple[str, ...] = ()
     stopped_early: bool = False
     messages: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    #: The gate's verdict and the fact block, when a gate ran. None means it
+    #: did not - deliberately not a passing verdict, so nothing downstream can
+    #: mistake "not checked" for "checked and fine".
+    grounding: Any | None = None
 
     @property
     def denials(self) -> tuple[ToolInvocation, ...]:

@@ -13,20 +13,23 @@ without holding anything in memory.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from src.agent.answer import assemble
 from src.agent.graph import MAX_TOOL_TURNS, AgentRun, build_graph, summarise
 from src.agent.prompts import system_prompt
 from src.agent.tools.base import Tool
 from src.agent.tools.context import ToolContext, open_tool_context
 from src.auth.principal import Principal
+from src.domain.evidence import EvidenceError, EvidenceKind
 from src.providers.base import ChatProvider
 
 #: Beside the committed database, not inside it: `parcelpilot.db` is rebuilt
@@ -40,14 +43,61 @@ class Agent:
     tools: Sequence[Tool]
     graph: Any
     tool_context: ToolContext
+    #: The cheap-model half of the grounding gate. Absent means the gate does
+    #: not run - and `AgentRun.answer` is None rather than a pass, so nothing
+    #: downstream can mistake "not checked" for "checked and fine".
+    extractor: Any | None = None
 
     def ask(self, question: str, *, thread_id: str = "default") -> AgentRun:
-        """One turn. Returns what was said and everything that was called."""
+        """One turn: the model plans, the tools run, and the gate grades."""
         state = self.graph.invoke(
             {"messages": self._opening(question, thread_id)},
             config={"configurable": {"thread_id": thread_id}},
         )
-        return summarise(state["messages"], stopped_early=bool(state.get("stopped_early")))
+        run = summarise(state["messages"], stopped_early=bool(state.get("stopped_early")))
+        if self.extractor is None:
+            return run
+
+        answer = assemble(
+            run.answer,
+            messages=state["messages"],
+            resolution=self._last_resolution(state["messages"]),
+            principal=self.principal,
+            thread_id=thread_id,
+            question=question,
+            extractor=self.extractor,
+            subject=question.rstrip("?").strip(),
+        )
+        # The gate's verdict replaces the prose, so a declined answer says what
+        # it could not establish instead of saying the thing it could not
+        # support. The facts stand either way; they were computed in Python.
+        return replace(
+            run,
+            answer=answer.prose or answer.escalation.summary,
+            grounding=answer,
+        )
+
+    def _last_resolution(self, messages: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+        """The full resolver payload behind the last resolution the run minted.
+
+        The tool result carries clause ids without their text, which is enough
+        to cite and not enough to render the delta an override turns on. The
+        store has the whole thing, under a handle the run already holds.
+        """
+        for message in reversed(messages):
+            if message.get("role") != "tool" or message.get("name") != "resolve_policy":
+                continue
+            try:
+                handle = json.loads(message["content"]).get("resolution_id")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not handle:
+                continue
+            try:
+                return self.tool_context.store.read(handle, expect=EvidenceKind.POLICY_RESOLUTION)
+            except EvidenceError:
+                return None
+        return None
 
     def history(self, thread_id: str = "default") -> list[dict[str, Any]]:
         snapshot = self.graph.get_state({"configurable": {"thread_id": thread_id}})
@@ -78,6 +128,7 @@ def open_agent(
     checkpoint_path: Path | str | None = None,
     retriever: Any | None = None,
     severity_classifier: Any | None = None,
+    extractor: Any | None = None,
     run_id: str = "run",
     max_tool_turns: int = MAX_TOOL_TURNS,
 ) -> Iterator[Agent]:
@@ -97,7 +148,13 @@ def open_agent(
     ) as tool_context:
         tools = build_toolset(tool_context)
         graph = build_graph(tools, provider, checkpointer=saver, max_tool_turns=max_tool_turns)
-        agent = Agent(principal=principal, tools=tools, graph=graph, tool_context=tool_context)
+        agent = Agent(
+            principal=principal,
+            tools=tools,
+            graph=graph,
+            tool_context=tool_context,
+            extractor=extractor,
+        )
         try:
             yield agent
         finally:
