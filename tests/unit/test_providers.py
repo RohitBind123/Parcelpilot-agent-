@@ -12,6 +12,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
 from src.config import ChatConfig, EmbeddingConfig
 from src.providers.base import ProviderError, Tier
 from src.providers.openai_compatible import OpenAICompatibleChat, OpenAICompatibleEmbeddings

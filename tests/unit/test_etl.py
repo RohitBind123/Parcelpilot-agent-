@@ -15,6 +15,7 @@ from typing import ClassVar
 from zoneinfo import ZoneInfo
 
 import pytest
+
 from src.datastore.etl import WORKBOOK_PATH, build_database
 
 IST = ZoneInfo("Asia/Kolkata")

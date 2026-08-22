@@ -56,9 +56,9 @@ _STRUCTURAL_LINE: Final = re.compile(
     r"^(?:\d{1,2}\.\s+[A-Z]|KI-\d+\b|(?:Plan|Enterprise|Growth|Standard)\s)"
 )
 
-_SOFT_HYPHEN: Final = "­"
-_NBSP: Final = " "
-_NARROW_NBSP: Final = " "
+_SOFT_HYPHEN: Final = "\u00ad"  # soft hyphen
+_NBSP: Final = "\u00a0"  # no-break space
+_NARROW_NBSP: Final = "\u202f"  # narrow no-break space
 
 
 def extract_text(path: Path | str) -> str:

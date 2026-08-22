@@ -8,6 +8,7 @@ selecting a provider without its key is an error rather than a 401 later.
 from __future__ import annotations
 
 import pytest
+
 from src.config import ConfigError, Settings, get_settings
 
 CLEARED = (

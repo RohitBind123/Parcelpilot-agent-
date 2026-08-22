@@ -8,6 +8,7 @@ rows rather than only in the scope table.
 from __future__ import annotations
 
 import pytest
+
 from src.auth.personas import PERSONAS, get_persona, list_personas, to_principal
 from src.auth.principal import (
     SCOPE_APPROVE_CREDIT,

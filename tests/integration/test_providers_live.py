@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import pytest
+
 from src.config import Settings
 from src.providers.registry import get_chat_provider, get_embedding_provider, reset_providers
 

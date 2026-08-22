@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+
 from src.clock import (
     BUSINESS_END,
     BUSINESS_START,

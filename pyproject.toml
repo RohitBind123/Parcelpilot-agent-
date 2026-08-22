@@ -29,6 +29,9 @@ ignore = [
     "B008",     # FastAPI's Depends() in defaults is idiomatic
 ]
 
+[tool.ruff.lint.isort]
+known-first-party = ["src", "app"]
+
 [tool.ruff.lint.per-file-ignores]
 # The clock is the one module allowed to name the forbidden functions, in a
 # docstring explaining why they are forbidden. Tests may build naive datetimes

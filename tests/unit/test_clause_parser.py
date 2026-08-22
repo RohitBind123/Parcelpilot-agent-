@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+
 from src.knowledge.clause_parser import Clause, parse_all, parse_document
 from src.knowledge.sources import SOURCE_FILES, get_source
 from src.knowledge.topics import ALL_TOPICS, Topic

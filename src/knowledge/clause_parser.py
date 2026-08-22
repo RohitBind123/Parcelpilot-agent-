@@ -50,7 +50,8 @@ _HEADER_FIELD: Final = re.compile(
 _FIRST_KEY: Final = re.compile(rf"\b(?:{_KEY_ALTERNATION})\s*:")
 
 _NUMBERED_HEADING: Final = re.compile(r"^(\d{1,2})\.\s+(.+?)\s*$", re.MULTILINE)
-_KI_HEADING: Final = re.compile(r"^(KI-\d+)\s*[-–:]\s*(.+?)\s*$", re.MULTILINE)
+# The separator after a known-issue id is a hyphen, an en dash or a colon.
+_KI_HEADING: Final = re.compile(r"^(KI-\d+)\s*[-\u2013:]\s*(.+?)\s*$", re.MULTILINE)
 _ACCOUNT_ID: Final = re.compile(r"\bACCT-\d{3}\b")
 _DATE: Final = re.compile(r"\b(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b")
 _TERM_RANGE: Final = re.compile(r"(.+?)\s+to\s+(.+)", re.DOTALL)

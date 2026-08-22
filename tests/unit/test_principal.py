@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
+
 from src.auth.principal import (
     SCOPE_AGGREGATE_TICKETS,
     SCOPE_APPROVE_CREDIT,

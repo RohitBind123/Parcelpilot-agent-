@@ -13,6 +13,7 @@ therefore a real step, not tidying.
 from __future__ import annotations
 
 import pytest
+
 from src.knowledge.pdftext import extract_text, normalise
 from src.knowledge.sources import SOURCE_FILES
 
@@ -26,10 +27,10 @@ class TestArtifactRepair:
         assert normalise("ParcelPilot  Support  Policy  v3") == "ParcelPilot Support Policy v3"
 
     def test_normalises_non_breaking_spaces(self):
-        assert normalise("INR 250") == "INR 250"
+        assert normalise("INR\u00a0250") == "INR 250"
 
     def test_drops_soft_hyphens(self):
-        assert normalise("cancel­lation") == "cancellation"
+        assert normalise("cancel\u00adlation") == "cancellation"
 
     def test_bullets_start_their_own_line(self):
         raw = "targets: ● P1: 15 minutes ● P2: 1 hour"
