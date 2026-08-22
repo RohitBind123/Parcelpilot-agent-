@@ -34,7 +34,6 @@ that declares it sufficient.
 
 from __future__ import annotations
 
-import difflib
 import logging
 import re
 from collections.abc import Mapping
@@ -42,7 +41,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final, Protocol
 
-from src.agent.facts import FactBlock
+from src.agent.facts import FactBlock, figures_in
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +52,6 @@ logger = logging.getLogger(__name__)
 #: with anything retrieved.
 SUPPORT_RATIO: Final = 0.55
 
-_IDENTIFIER: Final = re.compile(r"\b(?:ORD|TKT|ACCT|KI)-\d+\b|§\s*[\d.]+|\bv\d+\b", re.IGNORECASE)
-_NUMBER: Final = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _QUOTED: Final = re.compile(r"[\"\u201c\u2018]([^\"\u201d\u2019]*)[\"\u201d\u2019]")
 _WORD: Final = re.compile(r"[a-z0-9]+")
 
@@ -148,7 +145,7 @@ class GateOutcome:
     prose: str
     claims: tuple[Claim, ...] = ()
     failures: tuple[Failure, ...] = ()
-    invented_figures: tuple[float, ...] = ()
+    invented_figures: tuple[tuple[float, str | None], ...] = ()
 
     @property
     def repairable(self) -> bool:
@@ -167,7 +164,7 @@ class GateOutcome:
             "verdict": self.verdict.value,
             "claims": [c.text for c in self.claims],
             "failures": [{"claim": f.claim.text, "reason": f.reason} for f in self.failures],
-            "invented_figures": list(self.invented_figures),
+            "invented_figures": [[v, u or ""] for v, u in self.invented_figures],
         }
 
 
@@ -223,34 +220,63 @@ def check_figures(prose: str, block: FactBlock, sources: Mapping[str, str]) -> t
     """
     allowed = set(block.figures)
     for text in sources.values():
-        allowed |= _figures_in(text)
-    return tuple(sorted(f for f in unquoted_figures(prose) if f not in allowed))
+        allowed |= figures_in(text)
+    any_unit = {value for value, _ in allowed}
+    ungrounded = [
+        (value, unit)
+        for value, unit in unquoted_figures(prose)
+        # A figure the prose states without a unit makes no claim about units,
+        # so the same value anywhere in the evidence grounds it. One that does
+        # carry a unit must match on the unit as well, or "1 hour" inherits
+        # support from a policy row that says "1 business day".
+        if (value, unit) not in allowed and not (unit is None and value in any_unit)
+    ]
+    return tuple(sorted(ungrounded, key=lambda f: (f[0], f[1] or "")))
 
 
-def unquoted_figures(prose: str) -> set[float]:
+def unquoted_figures(prose: str) -> set[tuple[float, str | None]]:
     """Figures the model asserted in its own voice.
 
     Text inside quotation marks is a verbatim citation, and was checked when the
     clause entered the evidence set. Re-checking it here would flag an answer
     for accurately quoting its source.
     """
-    return _figures_in(_QUOTED.sub(" ", prose))
+    return figures_in(_QUOTED.sub(" ", prose))
 
 
 # -- internals --------------------------------------------------------------
-
-
-def _figures_in(text: str) -> set[float]:
-    stripped = _IDENTIFIER.sub(" ", text)
-    return {float(m.group(0).replace(",", "")) for m in _NUMBER.finditer(stripped)}
 
 
 def _evidence_text(block: FactBlock, sources: Mapping[str, str]) -> str:
     return " ".join([block.render(), *sources.values()]).lower()
 
 
+def _stem(word: str) -> str:
+    """Enough inflection-stripping to match a paraphrase to its clause.
+
+    Deliberately a fixed set of suffix rules rather than a similarity score.
+    The first version used difflib at a 0.85 cutoff and rejected "the fee is
+    waived" against a clause that says "waives" - 0.833 - so a correct claim
+    was reported unsupported and a correct answer would have been dropped. A
+    threshold that fails on the single most common inflection in the corpus is
+    not a threshold, it is a coin.
+    """
+    for suffix, minimum in (("ing", 6), ("ed", 5), ("es", 5), ("s", 4), ("d", 5)):
+        if len(word) >= minimum and word.endswith(suffix):
+            word = word[: -len(suffix)]
+            break
+    if len(word) > 3 and word.endswith("e"):
+        word = word[:-1]
+    # Collapse a doubled final consonant, unconditionally so both sides of a
+    # comparison get the same treatment: "cancelled" strips to "cancell" and
+    # has to meet "cancel".
+    if len(word) > 3 and word[-1] == word[-2] and word[-1].isalpha():
+        word = word[:-1]
+    return word
+
+
 def _content_words(text: str) -> set[str]:
-    return {w for w in _WORD.findall(text.lower()) if w not in _STOPWORDS and len(w) > 2}
+    return {_stem(w) for w in _WORD.findall(text.lower()) if w not in _STOPWORDS and len(w) > 2}
 
 
 def _supported(claim: str, evidence: str) -> bool:
@@ -265,13 +291,7 @@ def _supported(claim: str, evidence: str) -> bool:
     if not words:
         return True  # nothing asserted, nothing to support
     evidence_words = _content_words(evidence)
-    hits = sum(1 for w in words if w in evidence_words or _close(w, evidence_words))
-    return hits / len(words) >= SUPPORT_RATIO
-
-
-def _close(word: str, vocabulary: set[str]) -> bool:
-    """Tolerate inflection: 'waives' against 'waive', 'fees' against 'fee'."""
-    return bool(difflib.get_close_matches(word, vocabulary, n=1, cutoff=0.85))
+    return sum(1 for w in words if w in evidence_words) / len(words) >= SUPPORT_RATIO
 
 
 # There is deliberately no `asserts(claims, forbidden)` helper here.

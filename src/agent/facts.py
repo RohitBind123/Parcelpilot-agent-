@@ -23,10 +23,48 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
 
-#: Figures the gate should not treat as claims: clause references, document
-#: versions and record identifiers all contain digits and assert nothing.
-_IDENTIFIER: Final = re.compile(r"\b(?:ORD|TKT|ACCT|KI)-\d+\b|§\s*[\d.]+|\bv\d+\b", re.IGNORECASE)
-_NUMBER: Final = re.compile(r"\d[\d,]*(?:\.\d+)?")
+#: Digits that identify rather than count. Clause references, document
+#: versions, record ids and severity labels all contain them and assert no
+#: quantity. Shared with the grounding gate, which must draw the same line -
+#: two copies of this pattern would drift, and the drift would show up as a
+#: correct answer being failed for a figure nobody stated.
+#:
+#: The general rule is a letter immediately followed by digits: P1, v3, KI-211.
+#: A real quantity always has a space or a symbol between them ("INR 250",
+#: "30 minutes"), so nothing countable is caught.
+IDENTIFIER: Final = re.compile(
+    r"\b[A-Za-z]{1,4}-\d+(?:\.\d+)*\b"  # ORD-1001, TKT-504, KI-211
+    r"|\b[A-Za-z]{1,2}\d+\b"  # P1, v3
+    r"|§\s*[\d.]+",  # §2, §3.1
+    re.IGNORECASE,
+)
+#: A quantity and the unit that gives it meaning. The unit matters: Policy v3
+#: §3 says Enterprise P1 is "30 minutes, 24x7" and Standard P2 is "1 business
+#: day", so the bare number 1 is grounded by that grid - and "the target is
+#: 1 hour", the deprecated v2 answer GS-017 exists to catch, would inherit its
+#: support from a row about days. Pairing the value with its unit is what makes
+#: the check mean what it appears to mean.
+_QUANTITY: Final = re.compile(
+    r"(?P<currency>INR|Rs\.?|₹)?\s*(?P<value>\d[\d,]*(?:\.\d+)?)"
+    r"(?:\s*(?:business\s+)?(?P<unit>minutes?|mins?|hours?|hrs?|days?|weeks?|"
+    r"months?|years?|rows?|%|percent))?",
+    re.IGNORECASE,
+)
+
+_UNIT_ALIASES: Final = {
+    "min": "minutes",
+    "mins": "minutes",
+    "minute": "minutes",
+    "hr": "hours",
+    "hrs": "hours",
+    "hour": "hours",
+    "day": "days",
+    "week": "weeks",
+    "month": "months",
+    "year": "years",
+    "row": "rows",
+    "percent": "%",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,8 +79,9 @@ class FactRow:
 @dataclass(frozen=True, slots=True)
 class FactBlock:
     rows: tuple[FactRow, ...] = ()
-    #: Every number the prose is entitled to state without further support.
-    figures: frozenset[float] = field(default_factory=frozenset)
+    #: Every quantity the prose may state without further support, paired with
+    #: its unit. See `_QUANTITY` for why the unit is not optional.
+    figures: frozenset[tuple[float, str | None]] = field(default_factory=frozenset)
     #: Clause ids the prose may cite. Excluded clauses are deliberately absent.
     citable: frozenset[str] = field(default_factory=frozenset)
 
@@ -60,7 +99,7 @@ class FactBlock:
     def to_payload(self) -> dict[str, Any]:
         return {
             "rows": [r.to_payload() for r in self.rows],
-            "figures": sorted(self.figures),
+            "figures": sorted((v, u or "") for v, u in self.figures),
             "citable": sorted(self.citable),
         }
 
@@ -92,12 +131,12 @@ def compose(
         basis = _basis(calculation or {}, sla or {})
         if basis:
             rows.append(FactRow("Basis", basis))
-            figures.update(_figures_in(basis))
+            figures.update(figures_in(basis))
     if conflicts:
         caution = _caution(conflicts)
         if caution:
             rows.append(FactRow("Caution", caution))
-            figures.update(_figures_in(caution))
+            figures.update(figures_in(caution))
 
     return FactBlock(rows=tuple(rows), figures=frozenset(figures), citable=frozenset(citable))
 
@@ -110,7 +149,7 @@ def _verdict_and_amount(calc: Mapping[str, Any], figures: set[float]) -> list[Fa
     amount = _amount(calc)
     if amount is not None:
         rows.append(FactRow("Amount", amount))
-        figures.update(_figures_in(amount))
+        figures.update(figures_in(amount))
     return rows
 
 
@@ -160,7 +199,7 @@ def _sla_rows(sla: Mapping[str, Any], figures: set[float]) -> list[FactRow]:
     )
     if sla.get("target"):
         rows.append(FactRow("Target", f"{sla['target']} ({sla.get('clock_type', 'calendar')})"))
-        figures.update(_figures_in(str(sla["target"])))
+        figures.update(figures_in(str(sla["target"])))
     if sla.get("due_at"):
         rows.append(FactRow("Due", str(sla["due_at"])))
     # A4: there is no first_response_at column, so a breach is not measurable.
@@ -276,15 +315,38 @@ def _caution(report: Mapping[str, Any]) -> str:
 # -- figures ----------------------------------------------------------------
 
 
-def _params_figures(entry: Mapping[str, Any]) -> set[float]:
-    return {
-        float(v)
-        for v in (entry.get("params") or {}).values()
-        if isinstance(v, (int, float)) and not isinstance(v, bool)
-    }
+def _params_figures(entry: Mapping[str, Any]) -> set[tuple[float, str | None]]:
+    """Quantities from a clause's typed params, with the unit its key implies.
+
+    `fee_after_window_inr` is 250 rupees, not the bare number 250, and the key
+    already says so - which is more reliable than re-reading it out of prose.
+    """
+    found = set()
+    for key, value in (entry.get("params") or {}).items():
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        unit = next((u for suffix, u in _KEY_UNITS.items() if key.endswith(suffix)), None)
+        found.add((float(value), unit))
+    return found
 
 
-def _figures_in(text: str) -> set[float]:
-    """Numbers in rendered text, excluding anything that identifies rather than counts."""
-    stripped = _IDENTIFIER.sub(" ", text)
-    return {float(m.group(0).replace(",", "")) for m in _NUMBER.finditer(stripped)}
+_KEY_UNITS: Final = {
+    "_inr": "inr",
+    "_minutes": "minutes",
+    "_hours": "hours",
+    "_days": "days",
+    "_rows": "rows",
+}
+
+
+def figures_in(text: str) -> set[tuple[float, str | None]]:
+    """Quantities in text, excluding anything that identifies rather than counts."""
+    stripped = IDENTIFIER.sub(" ", text)
+    found = set()
+    for match in _QUANTITY.finditer(stripped):
+        raw_unit = (match.group("unit") or "").lower().rstrip()
+        unit = _UNIT_ALIASES.get(raw_unit, raw_unit) or None
+        if match.group("currency"):
+            unit = "inr"
+        found.add((float(match.group("value").replace(",", "")), unit))
+    return found

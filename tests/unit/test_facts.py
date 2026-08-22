@@ -168,9 +168,11 @@ class TestWhatTheGateWillUse:
     def test_every_figure_in_the_block_is_collectable(self, block):
         # The gate compares prose figures against this set, so it has to be a
         # property of the block rather than re-parsed from the rendered text.
-        assert 0 in block.figures
-        assert 250 in block.figures
-        assert 120 in block.figures
+        # Paired with units: the bare number 1 is grounded by a policy row
+        # saying "1 business day", and would otherwise let "1 hour" through.
+        assert (0.0, "inr") in block.figures
+        assert (250.0, "inr") in block.figures
+        assert (120.0, "minutes") in block.figures
 
     def test_the_cited_clauses_are_collectable(self, block):
         assert "northstar_logistics_enterprise_agreement::§2" in block.citable
@@ -209,3 +211,137 @@ class TestComposingWithoutACalculation:
 
     def test_an_empty_block_grounds_no_figures(self):
         assert compose().figures == frozenset()
+
+
+SLA_OUTCOME = {
+    "ticket_id": "TKT-501",
+    "severity": "P1",
+    "severity_inferred": False,
+    "target": "15 minutes",
+    "clock_type": "24x7",
+    "due_at": "2026-08-16T10:45:00+05:30",
+    "elapsed_minutes": 30,
+    "measurable": False,
+}
+
+CREDIT_OUTCOME = {
+    "order_id": "ORD-2002",
+    "eligible": True,
+    "credit_inr": 300.0,
+    "delay_hours": 4.5,
+    "governing_clause": "lumenworks_service_agreement::§3",
+}
+
+SLA_RESOLUTION = {
+    "topic": "first_response_target",
+    "governing": {
+        "clause_id": "northstar_logistics_enterprise_agreement::§1",
+        "citation": "ParcelPilot - Northstar Logistics Enterprise Agreement §1",
+        "tier": 1,
+        "title": "Support terms",
+        "params": {},
+    },
+    "overridden": [],
+    "deferred": [
+        {
+            "clause_id": "lumenworks_service_agreement::§2",
+            "citation": "ParcelPilot - LumenWorks Service Agreement §2",
+            "tier": 1,
+            "title": "Cancellation",
+            "params": {"overrides": False},
+        }
+    ],
+    "supporting": [
+        {
+            "clause_id": "support_policy_v3_current::§4",
+            "citation": "ParcelPilot Support Policy v3 §4",
+            "tier": 2,
+            "title": "Escalation",
+            "params": {},
+        }
+    ],
+    "excluded": [],
+}
+
+
+class TestTheSlaRows:
+    def test_severity_is_shown_with_whether_it_was_inferred(self):
+        block = compose(sla=SLA_OUTCOME, resolution=SLA_RESOLUTION)
+        assert row(block, "Severity").value == "P1"
+
+    def test_an_inferred_severity_says_so(self):
+        block = compose(sla={**SLA_OUTCOME, "severity_inferred": True}, resolution=SLA_RESOLUTION)
+        assert "inferred" in row(block, "Severity").value
+
+    def test_an_undetermined_severity_is_not_a_blank(self):
+        # D25 on the customer surface: no target is quoted, and the block has
+        # to say why rather than omit the row and look complete.
+        block = compose(sla={**SLA_OUTCOME, "severity": None}, resolution=SLA_RESOLUTION)
+        assert row(block, "Severity").value == "undetermined"
+
+    def test_the_target_carries_its_clock(self):
+        # "15 minutes" means something different on a 24x7 clock and a
+        # business-hours one, and AS_OF is a Sunday.
+        block = compose(sla=SLA_OUTCOME, resolution=SLA_RESOLUTION)
+        assert row(block, "Target").value == "15 minutes (24x7)"
+
+    def test_the_unmeasurability_is_stated_not_implied(self):
+        # A4: there is no first_response_at column, so a breach cannot be
+        # proven. A block that shows elapsed time beside a target and says
+        # nothing else has implied one.
+        block = compose(sla=SLA_OUTCOME, resolution=SLA_RESOLUTION)
+        assert "does not record first-reply" in row(block, "Measurable").value
+
+    def test_elapsed_time_lands_in_the_basis(self):
+        block = compose(sla=SLA_OUTCOME, resolution=SLA_RESOLUTION)
+        assert "30 minutes elapsed" in row(block, "Basis").value
+
+    def test_a_deferring_agreement_gets_its_own_row(self):
+        # A Tier 1 clause that declines to override is still worth naming: the
+        # customer has an agreement and it was checked.
+        block = compose(sla=SLA_OUTCOME, resolution=SLA_RESOLUTION)
+        assert "LumenWorks Service Agreement §2" in row(block, "Deferred").value
+
+    def test_supporting_clauses_are_listed_without_claiming_authority(self):
+        block = compose(sla=SLA_OUTCOME, resolution=SLA_RESOLUTION)
+        assert "Support Policy v3 §4" in row(block, "Supporting").value
+        assert "Support Policy v3 §4" not in row(block, "Governing").value
+
+
+class TestTheCreditRows:
+    def test_an_eligible_credit_says_so(self):
+        block = compose(calculation=CREDIT_OUTCOME)
+        assert row(block, "Verdict").value == "Eligible for a service credit"
+        assert row(block, "Amount").value == "INR 300"
+
+    def test_an_ineligible_one_says_that_instead_of_showing_zero(self):
+        block = compose(calculation={**CREDIT_OUTCOME, "eligible": False, "credit_inr": None})
+        assert "Not eligible" in row(block, "Verdict").value
+        assert row(block, "Amount").value.startswith("unknown")
+
+    def test_a_formula_is_carried_when_the_amount_cannot_be_computed(self):
+        # GS-009: no order was named, so there is no shipment fee to take 10%
+        # of. Stating the formula is honest; stating a number would not be.
+        block = compose(
+            calculation={
+                **CREDIT_OUTCOME,
+                "credit_inr": None,
+                "amount_formula": "lower_of(500, 0.10 * shipment_fee_inr)",
+            }
+        )
+        assert "lower_of" in row(block, "Amount").value
+
+    def test_the_delay_lands_in_the_basis(self):
+        block = compose(calculation=CREDIT_OUTCOME)
+        assert "4.5 hours past the pickup window" in row(block, "Basis").value
+
+    def test_a_non_cancellable_order_says_the_status_that_blocked_it(self):
+        block = compose(
+            calculation={"cancellable": False, "order_status": "PICKED_UP", "fee_inr": None}
+        )
+        assert "PICKED_UP" in row(block, "Verdict").value
+
+    def test_an_undeterminable_fee_is_not_reported_as_free(self):
+        block = compose(calculation={"cancellable": True, "fee_inr": None})
+        assert "could not be determined" in row(block, "Verdict").value
+        assert "0" not in row(block, "Amount").value

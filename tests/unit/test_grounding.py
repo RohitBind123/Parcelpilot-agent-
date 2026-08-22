@@ -106,7 +106,7 @@ class TestFiguresAreCheckedWithoutAModel:
 
     def test_an_invented_figure_fails(self, block):
         # The failure the whole design exists to prevent.
-        assert check_figures("A fee of INR 175 applies.", block, SOURCES) == (175.0,)
+        assert check_figures("A fee of INR 175 applies.", block, SOURCES) == ((175.0, "inr"),)
 
     def test_a_figure_quoted_from_a_cited_clause_passes(self, block):
         # "the standard INR 250 charge does not apply" is correct and necessary;
@@ -119,7 +119,7 @@ class TestFiguresAreCheckedWithoutAModel:
         assert check_figures("Webhooks can lag 20 minutes.", block, SOURCES) == ()
 
     def test_a_figure_from_a_source_nobody_read_fails(self, block):
-        assert check_figures("The cap is INR 5000.", block, {}) == (5000.0,)
+        assert check_figures("The cap is INR 5000.", block, {}) == ((5000.0, "inr"),)
 
     def test_thousands_separators_are_one_number(self, block):
         sources = {"x": "the supported limit remains 5,000 rows"}
@@ -145,7 +145,10 @@ class TestFiguresAreCheckedWithoutAModel:
         assert check_figures("The issue was opened on 12 August 2026.", block, sources) == ()
 
     def test_several_inventions_are_all_reported(self, block):
-        assert set(check_figures("INR 175 or INR 900.", block, SOURCES)) == {175.0, 900.0}
+        assert set(check_figures("INR 175 or INR 900.", block, SOURCES)) == {
+            (175.0, "inr"),
+            (900.0, "inr"),
+        }
 
 
 class TestTheSubstringMistake:
@@ -307,7 +310,7 @@ class TestTheOutcome:
             sources=SOURCES,
             extractor=StubExtractor("the fee is INR 175"),
         )
-        assert outcome.invented_figures == (175.0,)
+        assert outcome.invented_figures == ((175.0, "inr"),)
 
     def test_an_invented_figure_is_never_recoverable_by_re_retrieval(self, block):
         # A number the evidence does not contain will not be found by searching
@@ -328,7 +331,7 @@ class TestUnquotedFigures:
         assert unquoted_figures('The clause says "charge INR 250" here.') == set()
 
     def test_it_still_sees_figures_outside_the_quotation(self):
-        assert unquoted_figures('It says "charge INR 250" so you owe INR 400.') == {400.0}
+        assert unquoted_figures('It says "charge INR 250" so you owe INR 400.') == {(400.0, "inr")}
 
 
 class TestTheLlmExtractorBoundary:
@@ -373,3 +376,111 @@ class TestTheLlmExtractorBoundary:
     def test_an_empty_extraction_does_not_pass_the_gate(self, block):
         outcome = ground("Some prose.", block=block, sources=SOURCES, extractor=StubExtractor())
         assert outcome.verdict is Verdict.UNCHECKED
+
+
+class TestIdentifiersAreNotQuantities:
+    """Digits that identify rather than count. Every one of these appeared in a
+    real answer during M7, and treating any of them as a claim fails a correct
+    response for a figure nobody stated."""
+
+    @pytest.mark.parametrize(
+        ("prose", "expected"),
+        [
+            ("A P1 ticket has a 30 minute target.", {(30.0, "minutes")}),
+            ("Under Support Policy v3 the target is 30 minutes.", {(30.0, "minutes")}),
+            ("See ORD-1001, TKT-504 and KI-211.", set()),
+            ("Section §3.1 applies.", set()),
+            ("The fee is INR 250.", {(250.0, "inr")}),
+            ("P2 tickets get 2 business hours.", {(2.0, "hours")}),
+        ],
+    )
+    def test_only_quantities_are_figures(self, prose, expected):
+        assert unquoted_figures(prose) == expected
+
+    def test_the_gate_and_the_block_extract_figures_the_same_way(self):
+        # One function, not two patterns kept in step. A divergence here shows
+        # up as the gate failing an answer for a figure the block put in it.
+        import src.agent.grounding as gate
+        from src.agent.facts import figures_in
+
+        assert gate.figures_in is figures_in
+        assert figures_in("INR 250 after 30 minutes") == {(250.0, "inr"), (30.0, "minutes")}
+
+
+class TestTheUnitIsPartOfTheFigure:
+    """Policy v3 §3 says Enterprise P1 is "30 minutes, 24x7" and Standard P2 is
+    "1 business day". The bare number 1 is therefore grounded by that grid - so
+    a gate checking bare numbers accepts "the target is 1 hour", which is the
+    deprecated v2 answer GS-017 exists to catch."""
+
+    @pytest.fixture
+    def grid(self):
+        return {
+            "support_policy_v3_current::§3": (
+                "Plan P1 P2 P3\nEnterprise 30 minutes, 24x7 2 hours 1 business day\n"
+                "Growth 2 business hours 4 business hours 2 business days"
+            )
+        }
+
+    def test_the_right_number_with_the_wrong_unit_is_caught(self, block, grid):
+        assert check_figures("The target is 1 hour.", block, grid) == ((1.0, "hours"),)
+
+    def test_the_number_in_its_own_unit_passes(self, block, grid):
+        assert check_figures("The target is 1 business day.", block, grid) == ()
+
+    def test_the_correct_answer_passes(self, block, grid):
+        assert check_figures("The target is 30 minutes, 24x7.", block, grid) == ()
+
+    def test_a_figure_with_no_unit_is_grounded_by_the_same_value_anywhere(self, block, grid):
+        # Prose that states no unit makes no claim about units, and demanding
+        # one would fail ordinary writing.
+        assert check_figures("There are 2 listed above yours.", block, grid) == ()
+        assert check_figures("Exactly 30 of them apply.", block, grid) == ()
+
+    def test_a_value_that_appears_nowhere_is_still_caught(self, block, grid):
+        assert check_figures("There are 77 of them.", block, grid) == ((77.0, None),)
+
+
+class TestInflectionDoesNotBreakSupport:
+    """The support check compares stems, not similarity scores.
+
+    The first version used difflib at a 0.85 cutoff and rejected "the fee is
+    waived" against a clause that says "waives" - 0.833. A correct claim
+    reported unsupported means a correct answer dropped, which is the failure
+    mode a grounding gate is least allowed to have. The demo caught it.
+    """
+
+    @pytest.mark.parametrize(
+        "claim",
+        [
+            "the fee is waived",
+            "the agreement waives the fee",
+            "no cancellation fees apply",
+            "the shipment was booked 120 minutes ago",
+            "cancelling is permitted before pickup",
+        ],
+    )
+    def test_a_paraphrase_of_the_clause_is_supported(self, block, claim):
+        outcome = ground(claim, block=block, sources=SOURCES, extractor=StubExtractor(claim))
+        assert outcome.verdict is Verdict.PASSED, outcome.failures
+
+    @pytest.mark.parametrize(
+        "claim",
+        [
+            "refunds are processed within five working days",
+            "we deliver on Sundays",
+            "the retention period is seven years",
+        ],
+    )
+    def test_something_the_clause_does_not_say_is_still_unsupported(self, block, claim):
+        # Or the test above just proves the check accepts everything.
+        outcome = ground(claim, block=block, sources=SOURCES, extractor=StubExtractor(claim))
+        assert outcome.verdict is Verdict.FAILED
+
+    def test_the_stems_that_mattered(self):
+        from src.agent.grounding import _stem
+
+        assert _stem("waived") == _stem("waives") == _stem("waive")
+        assert _stem("fees") == _stem("fee")
+        assert _stem("minutes") == _stem("minute")
+        assert _stem("cancelled") == _stem("cancel")
