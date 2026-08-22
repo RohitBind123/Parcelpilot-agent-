@@ -136,18 +136,37 @@ argument and never a client-supplied field**.
 
 Seeded personas:
 
-| Persona | Role | Scope |
-|---|---|---|
-| Northstar customer | `customer` | ACCT-001 |
-| LumenWorks customer | `customer` | ACCT-002 |
-| Beacon Retail customer | `customer` | ACCT-003 |
-| Maya | `support_agent` | all accounts; `my_queue` = TKT-502, TKT-504, TKT-450 |
-| Rohit | `support_agent` | all accounts; `my_queue` = TKT-501, TKT-503, TKT-505, TKT-451 |
-| Priya Mehta | `ops_manager` | all accounts, all tickets, ops dashboard, credit approval |
+| Persona | Role | Scope | Why it exists |
+|---|---|---|---|
+| Northstar Logistics | `customer` | ACCT-001 | Agreement overrides the cancellation SOP outright |
+| LumenWorks | `customer` | ACCT-002 | Agreement *declines* to override cancellation but replaces the credit terms |
+| Beacon Retail | `customer` | ACCT-003 | No agreement; general policy governs |
+| Axis Labs | `customer` | ACCT-004 | Enterprise without premium support; only DELIVERED order; owns the P1 security ticket |
+| Maya | `support_agent` | all accounts; `my_queue` = TKT-502, TKT-504, TKT-450 | Reads widely, cannot run detection |
+| Rohit | `support_agent` | all accounts; `my_queue` = TKT-501, TKT-503, TKT-505, TKT-451 | Holds both open P1 tickets |
+| Priya Mehta | `ops_manager` | all accounts and tickets, ops dashboard, credit approval | The only role that can run detection |
 
-The Northstar/LumenWorks pair exists so the ORD-1001 vs ORD-2001 divergence can be demonstrated in
-two clicks. Maya and Rohit exist so `my_queue` splits real rows. Priya is the CSM named in both the
-`accounts` sheet and the Northstar agreement §4.
+One persona per account, because each account is a *different* policy situation — that is the whole
+point of the pack. The Northstar/LumenWorks pair demonstrates the ORD-1001 vs ORD-2001 divergence in
+two clicks. Maya and Rohit split the real ticket set via `assigned_to`. Priya is the CSM named in
+both the `accounts` sheet and Northstar agreement §4.
+
+### Scope table
+
+| Scope | customer | support_agent | ops_manager |
+|---|---|---|---|
+| `read:own_account` | yes | — | — |
+| `read:any_account` | — | yes | yes |
+| `read:ticket_aggregates` | — | yes | yes |
+| `read:own_queue` | — | yes | yes |
+| `read:sla_status` | — | yes | yes |
+| `read:ops_detection` | — | **—** | yes |
+| `write:prepare_action` | yes | yes | yes |
+| `write:approve_credit` | — | **—** | yes |
+
+`ops_manager` is a strict superset of `support_agent`, and the only scope customers share with staff
+is `write:prepare_action` — preparing is always allowed, because executing is gated separately by the
+confirmation token.
 
 ### 4.2 Session tokens (D17)
 
