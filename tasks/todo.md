@@ -19,7 +19,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 
 - [x] M0  Repo hygiene, config, `clock.py`, provider preflight
 - [x] M1  Data layer: ETL, schema, account-scoped views
-- [ ] M2  Clause registry + ingest; `params` baseline; Chroma provisioning; tool-calling check
+- [x] M2  Clause registry + ingest; `params` baseline; Chroma provisioning; tool-calling check
 - [ ] M2.5 **Golden-set review gate** — you sign off ~30 expected answers before tests depend on them
 - [ ] M3  Precedence resolver + deterministic calculators
 - [ ] M4  Consistency check + severity inference
@@ -46,7 +46,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 
 - [x] ~~Tool-calling reliability on Gemini~~ — closed in M0 via thought_signature echo
 - [x] Write and review the ~25-clause `params` baseline (M2)
-- [ ] Chroma Cloud database provisioning + free-tier limits (M2)
+- [x] Chroma Cloud database provisioning + free-tier limits (M2) — database created, 19 vectors
 - [ ] Numeric severity-confidence cut-off — behaviour settled, value not (M4)
 - [ ] Railway topology: one service or two (M12)
 
@@ -167,7 +167,7 @@ validated against `^ACCT-\d{3}$` before interpolation.
 
 ---
 
-## M2 — Clause registry, vector store, retrieval (in progress)
+## M2 — Clause registry, vector store, retrieval (complete)
 
 **Goal:** the six PDFs become a typed authority spine plus a searchable collection.
 This is where the assignment is won or lost: a wrong `params` value is a wrong
@@ -222,30 +222,56 @@ chunk table would otherwise have held.
 - [x] GREEN: extend `etl.py` / add `src/knowledge/ingest.py`
 
 ### 2.6 Vector store (D20)
-- [ ] `VectorStore` protocol; `ChromaLocalStore` and `ChromaCloudStore`
-- [ ] RED: the ACL predicate is injected inside the store, not passed by callers
-- [ ] RED: collection name is namespaced by embedding identity
-- [ ] RED: a customer query never returns another account's agreement
-- [ ] `scripts/provision_chroma.py`; confirm free-tier limits
+- [x] `VectorStore` protocol; `ChromaLocalStore` and `ChromaCloudStore`
+- [x] RED: the ACL predicate is injected inside the store, not passed by callers
+- [x] RED: collection name is namespaced by embedding identity
+- [x] RED: a customer query never returns another account's agreement
+- [x] `scripts/provision_chroma.py`; Cloud database created, free-tier confirmed
+
+**Deviation:** one implementation, two client factories. Local and Cloud differ
+by which client object is constructed; duplicating the query logic would give
+two copies to keep in step, and the copy under test would be the one that never
+ships. `tests/integration/test_vectorstore_live.py` covers the hosted path.
 
 ### 2.7 Hybrid retrieval
-- [ ] RED: BM25 built in memory from the clause table at startup
-- [ ] RED: RRF fusion prefers a clause both retrievers agree on
-- [ ] RED: an exact clause reference ("SOP v4 §1") is found by BM25 when dense misses
-- [ ] GREEN: `src/knowledge/retriever.py`
+- [x] RED: BM25 built in memory from the clause table at startup
+- [x] RED: RRF fusion prefers a clause both retrievers agree on
+- [x] RED: an exact clause reference ("SOP v4 §1") is found by BM25 when dense misses
+- [x] RED: the ACL holds on the lexical path too, and through fusion
+- [x] RED: dense failure degrades to lexical; a malformed Principal never does
+- [x] GREEN: `src/knowledge/retriever.py`, `src/knowledge/registry.py`
 
 ### 2.8 End-to-end (per user instruction: test E2E up to what is implemented)
-- [ ] `tests/integration/test_end_to_end.py` — grows each milestone
-- [ ] RED: build DB + registry + index from the real files, then as each persona
+- [x] `tests/integration/test_end_to_end.py` — grows each milestone
+- [x] RED: build DB + registry + index from the real files, then as each persona
       run a real retrieval and assert tier ordering and account scoping
-- [ ] RED: a Northstar session retrieving `cancellation_fee` sees Northstar §2 and
+- [x] RED: a Northstar session retrieving `cancellation_fee` sees Northstar §2 and
       SOP v4 §1, and never the LumenWorks agreement
-- [ ] RED: Policy v2 is retrievable but never in the citable set
-- [ ] `scripts/demo_m2.py` so the pipeline is runnable by hand
+- [x] RED: Policy v2 is retrievable but never in the citable set
+- [x] RED: retrieval scoping and repository scoping agree for the same principal
+- [x] `scripts/demo_m2.py` so the pipeline is runnable by hand
+- [x] `scripts/build_index.py`; verified against local Chroma and Chroma Cloud
 
 ### 2.9 Close out
-- [ ] `pytest` green, coverage >= 80%; `ruff check` clean
-- [ ] Commit in reviewable batches, push, open PR against `main`
+- [x] `pytest` green (467), coverage 94%; `ruff check` clean
+- [x] `pytest -m live` green (7/7) against Chroma Cloud + Gemini embeddings
+- [x] Commit in reviewable batches, push, open PR against `main`
+
+### Bugs found and fixed during M2 retrieval
+
+- **Chroma rejects a single-operand `$and`/`$or`.** Every topic-scoped dense
+  query with exactly one topic raised - the most common shape the resolver will
+  issue. Missed by the unit tests because none passed a topic to the dense path;
+  caught by the end-to-end test. Regression test added.
+- **A currency amount matched a section reference.** `INR 1,000` tokenized to
+  `1` and `000`, so a query for `SOP v4 §1` ranked §3 first: it held a bare `1`
+  and, being the shortest clause in the document, won on BM25 length
+  normalisation. The citation looked right and pointed at the wrong rule.
+  References are now atomic tokens (`section_1`) and thousands separators are
+  stripped before tokenizing.
+- **The two retrievers indexed different text.** Dense embedded `text` alone
+  while BM25 indexed title + reference + body, so a clause could be findable
+  one way and invisible the other. Both now use `Chunk.searchable_text`.
 
 ---
 
