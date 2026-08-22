@@ -18,7 +18,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 ## Phase 1 — Implementation (not started; no code until instructed)
 
 - [x] M0  Repo hygiene, config, `clock.py`, provider preflight
-- [ ] M1  Data layer: ETL, schema, account-scoped views
+- [x] M1  Data layer: ETL, schema, account-scoped views
 - [ ] M2  Clause registry + ingest; `params` baseline; Chroma provisioning; tool-calling check
 - [ ] M2.5 **Golden-set review gate** — you sign off ~30 expected answers before tests depend on them
 - [ ] M3  Precedence resolver + deterministic calculators
@@ -112,54 +112,58 @@ at startup instead of mid-demo. TDD throughout: test first (RED), implement (GRE
 
 ---
 
-## M1 — Data layer (in progress)
+## M1 — Data layer (complete)
 
 **Goal:** the workbook becomes a queryable, ACL-enforcing SQLite database whose
 NULLs survive intact, and whose snapshot time is verified against config rather
 than trusted. TDD throughout.
 
 ### 1.1 Schema
-- [ ] `src/datastore/schema.sql`: `accounts`, `orders`, `tickets`, `meta`
-- [ ] Foreign keys declared and `PRAGMA foreign_keys=ON` on every connection
-- [ ] Indexes for the real query shapes: `orders.account_id`, `tickets.account_id`,
+- [x] `src/datastore/schema.sql`: `accounts`, `orders`, `tickets`, `meta`
+- [x] Foreign keys declared and `PRAGMA foreign_keys=ON` on every connection
+- [x] Indexes for the real query shapes: `orders.account_id`, `tickets.account_id`,
       `tickets.assigned_to`, `tickets.status`
-- [ ] Timestamps stored as ISO 8601 **with offset**; a naive value is never written
-- [ ] Nullable columns stay nullable — no `NOT NULL DEFAULT 0` on money or timestamps
+- [x] Timestamps stored as ISO 8601 **with offset**; a naive value is never written
+- [x] Nullable columns stay nullable — no `NOT NULL DEFAULT 0` on money or timestamps
 
 ### 1.2 ETL (`src/datastore/etl.py`)
-- [ ] RED: all four sheets parse; row counts are exactly 4 / 6 / 7
-- [ ] RED: `AS_OF` is extracted from the README sheet, not hardcoded
-- [ ] RED: naive workbook datetimes are localised to Asia/Kolkata, never left naive
-- [ ] RED: absent values stay NULL — `pickup_actual_at` on ORD-1001,
+- [x] RED: all four sheets parse; row counts are exactly 4 / 6 / 7
+- [x] RED: `AS_OF` is extracted from the README sheet, not hardcoded
+- [x] RED: naive workbook datetimes are localised to Asia/Kolkata, never left naive
+- [x] RED: absent values stay NULL — `pickup_actual_at` on ORD-1001,
       `cancellation_requested_at` on ORD-2002, `historical_resolution` on open tickets
-- [ ] RED: xlsx booleans coerce to 0/1, and `premium_support` survives round-trip
-- [ ] RED: rebuild is idempotent — running twice yields identical rows
-- [ ] GREEN: implement; `scripts/build_db.py` CLI
+- [x] RED: xlsx booleans coerce to 0/1, and `premium_support` survives round-trip
+- [x] RED: rebuild is idempotent — running twice yields identical rows
+- [x] GREEN: implement; `scripts/build_db.py` CLI
 
-### 1.3 Account-scoped views (`src/datastore/views.sql`)
-- [ ] RED: a customer connection's temp views expose only its own rows
-- [ ] RED: the view set covers orders, tickets and accounts
-- [ ] GREEN: scoped connection factory binds views from the Principal at connect time
+### 1.3 Account-scoped views
+**Deviation:** no `views.sql`. SQLite cannot bind parameters inside a view
+definition, so the account predicate has to be built per Principal. The views
+are created in `repo._bind_scoped_views` at connect time, with the account id
+validated against `^ACCT-\d{3}$` before interpolation.
+- [x] RED: a customer connection's temp views expose only its own rows
+- [x] RED: the view set covers orders, tickets and accounts
+- [x] GREEN: scoped connection factory binds views from the Principal at connect time
 
 ### 1.4 Repository (`src/datastore/repo.py`)
-- [ ] RED: typed frozen row models; datetimes come back tz-aware
-- [ ] RED: a customer reading another account's order raises, and is loggable
-- [ ] RED: a customer cannot widen scope by passing `account_id`
-- [ ] RED: staff read any account; `my_queue` filters by `assigned_to`
-- [ ] RED: `query_tickets` is a parameterised builder, never free-text SQL
-- [ ] RED: batch fetch by ids is one round-trip, not one per id
-- [ ] GREEN: implement
+- [x] RED: typed frozen row models; datetimes come back tz-aware
+- [x] RED: a customer reading another account's order raises, and is loggable
+- [x] RED: a customer cannot widen scope by passing `account_id`
+- [x] RED: staff read any account; `my_queue` filters by `assigned_to`
+- [x] RED: `query_tickets` is a parameterised builder, never free-text SQL
+- [x] RED: batch fetch by ids is one round-trip, not one per id
+- [x] GREEN: implement
 
 ### 1.5 Invariants that tie config to data
-- [ ] RED: `meta.as_of` equals `clock.as_of()` — config and workbook cannot drift
-- [ ] RED: every persona `account_id` exists in `accounts`
-- [ ] RED: every `tickets.assigned_to` matches a `support_agent` persona `queue_key`
-- [ ] RED: ground-truth row assertions from findings §10 (statuses, fees, fault flags)
+- [x] RED: `meta.as_of` equals `clock.as_of()` — config and workbook cannot drift
+- [x] RED: every persona `account_id` exists in `accounts`
+- [x] RED: every `tickets.assigned_to` matches a `support_agent` persona `queue_key`
+- [x] RED: ground-truth row assertions from findings §10 (statuses, fees, fault flags)
 
 ### 1.6 Close out
-- [ ] `pytest` green, coverage >= 80%
-- [ ] `ruff check` clean
-- [ ] Commit in reviewable batches, push, open PR against `main`
+- [x] `pytest` green, coverage >= 80%
+- [x] `ruff check` clean
+- [x] Commit in reviewable batches, push, open PR against `main`
 
 ---
 
