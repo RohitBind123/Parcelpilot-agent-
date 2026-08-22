@@ -12,15 +12,15 @@ cancelled" are opposite answers, and zero renders as the wrong one.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final
 
-from src.domain.calculators.errors import NoBasis, WrongEvidence
+from src.domain.calculators.base import attribution, load_resolution, mint_result
+from src.domain.calculators.errors import NoBasis
 from src.domain.calculators.params import lookup
 from src.domain.evidence import EvidenceKind, EvidenceStore, Handle
-from src.domain.resolver import ClauseRef, PolicyResolution, UnresolvedConflict
+from src.domain.resolver import ClauseRef, PolicyResolution
 
 TOPIC: Final = "cancellation_fee"
 
@@ -97,7 +97,9 @@ def compute_cancellation_fee(
     naming an order.
     """
     order = store.read(snapshot_id, expect=EvidenceKind.ORDER_SNAPSHOT)
-    resolution = _resolution(store, resolution_id, order)
+    resolution = load_resolution(
+        store, resolution_id, topic=TOPIC, account_id=order.get("account_id")
+    )
 
     status = order["status"]
     rule = lookup(resolution, "status_rules")
@@ -121,7 +123,7 @@ def compute_cancellation_fee(
     if disposition in (_RETURN_TO_ORIGIN, _NOT_CANCELLABLE):
         outcome = CancellationOutcome(
             cancellable=False,
-            **_attribution(resolution, rule.source),
+            **attribution(resolution, rule.source),
             fee_inr=None,
             fee_basis=None,
             fee_source=None,
@@ -133,7 +135,7 @@ def compute_cancellation_fee(
             warnings=tuple(warnings),
             **common,
         )
-        return _mint(store, outcome, snapshot_id, resolution_id)
+        return mint_result(store, outcome, snapshot_id, resolution_id)
 
     elapsed = _elapsed_minutes(order)
     window = lookup(resolution, "free_window_minutes")
@@ -147,7 +149,7 @@ def compute_cancellation_fee(
 
     outcome = CancellationOutcome(
         cancellable=True,
-        **_attribution(resolution, source),
+        **attribution(resolution, source),
         fee_inr=fee,
         fee_basis=basis,
         fee_source=source,
@@ -159,32 +161,7 @@ def compute_cancellation_fee(
         warnings=tuple(warnings),
         **common,
     )
-    return _mint(store, outcome, snapshot_id, resolution_id)
-
-
-def _attribution(resolution: PolicyResolution, operative: str | None) -> dict[str, Any]:
-    """Which clause decided *this* answer, and what it actually displaced.
-
-    Not the same as the topic-level winner. Northstar section 2 governs the
-    cancellation fee, but its waiver is scoped to BOOKED shipments - so for a
-    PICKED_UP order the agreement decides nothing and the SOP's status rule
-    decides everything. Reporting "your agreement overrode the standard policy"
-    on that answer would be false, and it is the kind of false that reads as
-    generous.
-
-    An override is therefore only claimed when the clause that supplied the
-    operative value is the one the resolver ranked first.
-    """
-    governing = resolution.governing
-    decided_by_governing = (
-        operative is not None and governing is not None and (operative == governing.clause_id)
-    )
-    return {
-        "governing_clause": operative or (governing.clause_id if governing else ""),
-        "overridden_clauses": (
-            tuple(c.clause_id for c in resolution.overridden) if decided_by_governing else ()
-        ),
-    }
+    return mint_result(store, outcome, snapshot_id, resolution_id)
 
 
 def _fee(
@@ -228,78 +205,6 @@ def _fee(
     return float(charged.value), "after_free_window", charged.source
 
 
-def _resolution(
-    store: EvidenceStore, resolution_id: Handle | str, order: dict[str, Any]
-) -> PolicyResolution:
-    payload = store.read(resolution_id, expect=EvidenceKind.POLICY_RESOLUTION)
-
-    if payload.get("topic") != TOPIC:
-        raise WrongEvidence(
-            f"resolution is for {payload.get('topic')!r}, but {TOPIC!r} is required here"
-        )
-    if payload.get("account_id") != order.get("account_id"):
-        raise WrongEvidence(
-            "resolution and snapshot describe different accounts "
-            f"({payload.get('account_id')} vs {order.get('account_id')})"
-        )
-
-    resolution = _rehydrate(payload)
-    if not resolution.has_basis:
-        raise NoBasis(
-            f"nothing governs {TOPIC!r} for this account"
-            if resolution.unresolved_conflict is None
-            else f"unresolved conflict at tier {resolution.unresolved_conflict.tier}"
-        )
-    return resolution
-
-
-def _rehydrate(payload: dict[str, Any]) -> PolicyResolution:
-    """Rebuild a resolution from its stored payload.
-
-    Round-tripping through the evidence store rather than passing the object
-    means the calculator can only see what was actually recorded - if a field
-    is missing from the payload it is missing here too, instead of quietly
-    working in-process and failing once the API serialises it.
-    """
-
-    def ref(entry: dict[str, Any] | None) -> ClauseRef | None:
-        if entry is None:
-            return None
-        doc_title, _, clause_ref = entry["citation"].rpartition(" ")
-        return ClauseRef(
-            clause_id=entry["clause_id"],
-            doc_id=entry["clause_id"].split("::")[0],
-            doc_title=doc_title,
-            clause_ref=clause_ref,
-            title=entry.get("title", ""),
-            tier=entry["tier"],
-            account_id=entry.get("account_id"),
-            status="",
-            params=entry.get("params", {}),
-            reason=entry.get("reason"),
-        )
-
-    conflict = payload.get("unresolved_conflict")
-    return PolicyResolution(
-        topic=payload["topic"],
-        account_id=payload.get("account_id"),
-        governing=ref(payload.get("governing")),
-        overridden=tuple(ref(e) for e in payload.get("overridden", [])),
-        deferred=tuple(ref(e) for e in payload.get("deferred", [])),
-        supporting=tuple(ref(e) for e in payload.get("supporting", [])),
-        excluded=tuple(ref(e) for e in payload.get("excluded", [])),
-        unresolved_conflict=(
-            UnresolvedConflict(
-                tier=conflict["tier"],
-                clauses=tuple(ref(e) for e in conflict["clauses"]),
-                differing_params=tuple(conflict["differing_params"]),
-            )
-            if conflict
-            else None
-        ),
-    )
-
-
 def _ref(governing: ClauseRef | None) -> ClauseRef:
     if governing is None:  # pragma: no cover - has_basis already guaranteed it
         raise NoBasis("resolution has no governing clause")
@@ -314,19 +219,3 @@ def _elapsed_minutes(order: dict[str, Any]) -> int | None:
         return None
     delta = datetime.fromisoformat(requested) - datetime.fromisoformat(booked)
     return int(delta.total_seconds() // 60)
-
-
-def _mint(
-    store: EvidenceStore,
-    outcome: CancellationOutcome,
-    snapshot_id: Handle | str,
-    resolution_id: Handle | str,
-) -> CancellationOutcome:
-    from dataclasses import replace
-
-    handle = store.mint(
-        EvidenceKind.CALC_RESULT,
-        json.loads(json.dumps(outcome.to_payload())),
-        derived_from=[snapshot_id, resolution_id],
-    )
-    return replace(outcome, calc_id=handle.evidence_id)
