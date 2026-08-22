@@ -82,7 +82,8 @@ northstar_logistics_enterprise_agreement::§3:
   monthly_cap_inr: 5000
   overrides: false
 northstar_logistics_enterprise_agreement::§4: {}
-product_operations_guide_and_known_issues::KI-176: {}
+product_operations_guide_and_known_issues::KI-176:
+  issue_status: Resolved
 product_operations_guide_and_known_issues::KI-208:
   failure_threshold_rows: 3000
   issue_status: Investigating

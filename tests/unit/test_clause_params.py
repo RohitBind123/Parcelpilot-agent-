@@ -39,6 +39,7 @@ LUMEN_CANCEL = "lumenworks_service_agreement::§2"
 LUMEN_CREDIT = "lumenworks_service_agreement::§3"
 POLICY_V3_TARGETS = "support_policy_v3_current::§3"
 POLICY_V2_TARGETS = "support_policy_v2_deprecated::§-"
+KI_176 = "product_operations_guide_and_known_issues::KI-176"
 KI_208 = "product_operations_guide_and_known_issues::KI-208"
 KI_211 = "product_operations_guide_and_known_issues::KI-211"
 GUIDE_PLANS = "product_operations_guide_and_known_issues::§1"
@@ -180,6 +181,15 @@ class TestProductParams:
         got = p(params, GUIDE_PLANS)
         assert got["supported_rows"] == 5000
         assert set(got["plans_included"]) == {"Growth", "Enterprise"}
+
+    def test_a_resolved_issue_says_so_rather_than_staying_silent(self, params):
+        # KI-176 carries "Resolved 18 July 2026" in prose but no "Status:" line,
+        # so it used to extract to {}. That made "is this issue current?" a
+        # question answered by the absence of a key, and absence is not a fact -
+        # it is equally what a failed regex looks like. A consistency check that
+        # corroborates a conflict with a known issue has to be able to tell the
+        # two apart.
+        assert p(params, KI_176)["issue_status"] == "Resolved"
 
     def test_the_known_issue_threshold_is_not_the_product_limit(self, params):
         # KI-208 fails around 3,000 while the supported limit stays 5,000.

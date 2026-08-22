@@ -288,6 +288,12 @@ def _known_issue(clause: Clause) -> dict[str, Any]:
     params: dict[str, Any] = {}
     if status := re.search(r"Status:\s*(\w+)", text):
         params["issue_status"] = status.group(1)
+    elif re.search(r"\bResolved\b\s+\d", text):
+        # KI-176 states its resolution as prose ("Resolved 18 July 2026")
+        # instead of a Status line. Recording it means a caller asking "is this
+        # issue current?" reads an answer rather than an empty dict, which is
+        # also what a broken pattern produces.
+        params["issue_status"] = "Resolved"
     if delay := _int(text, rf"up to\s+{_INT}\s+minutes late"):
         params["delay_minutes"] = delay
     if carrier := re.search(r"\b(SwiftShip|BlueDart Pro|RoadRunner)\b", text):
