@@ -1103,6 +1103,11 @@ Carried into implementation; none block starting.
 3. **Chroma Cloud provisioning** — the tenant has zero databases. Script it so a reviewer can
    reproduce, and confirm the free-tier limits are adequate for two collections of ~50 chunks.
 4. ~~**OpenRouter funding**~~ — **closed.** Staying unfunded (D9a). Gemini carries dev, tests and demo.
-5. **Severity confidence threshold value** — the *behaviour* is settled (D25); the numeric cut-off is
-   not. Calibrate against the five open tickets in Milestone 4.
+5. ~~**Severity confidence threshold value**~~ — **closed in M4.** 0.95, calibrated against the
+   five open tickets at six samples each (`scripts/calibrate_severity.py`). TKT-502 and TKT-503
+   grade at 1.00 and never move; TKT-504 flips between P2 and P3 at 0.80-0.90, because a lagging
+   status display is genuinely undecided by §2. The threshold sits in that gap. Caveat recorded in
+   `severity.py`: the model reported 0.85 while giving different answers on identical input, so
+   self-reported confidence tracks stability only loosely — self-consistency sampling is the
+   stronger signal and is deferred to Milestone 11.
 6. **Railway topology** — one service running both processes, or two services. Defer to Milestone 12.

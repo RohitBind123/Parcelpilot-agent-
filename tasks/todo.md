@@ -22,7 +22,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 - [x] M2  Clause registry + ingest; `params` baseline; Chroma provisioning; tool-calling check
 - [x] M2.5 **Golden-set review gate** — 32 answers signed off
 - [x] M3  Precedence resolver + deterministic calculators
-- [ ] M4  Consistency check + severity inference
+- [x] M4  Consistency check + severity inference
 - [ ] M5  Tools with typed evidence handles + ACL projection
 - [ ] M6  Agent graph (LangGraph ReAct), CLI harness
 - [ ] M7  Fact-block composition + claim-level grounding gate
@@ -47,7 +47,8 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 - [x] ~~Tool-calling reliability on Gemini~~ — closed in M0 via thought_signature echo
 - [x] Write and review the ~25-clause `params` baseline (M2)
 - [x] Chroma Cloud database provisioning + free-tier limits (M2) — database created, 19 vectors
-- [ ] Numeric severity-confidence cut-off — behaviour settled, value not (M4)
+- [x] Numeric severity-confidence cut-off — **0.95**, calibrated in M4 against the
+      five open tickets; see `severity.py` for the numbers and the caveat
 - [ ] Railway topology: one service or two (M12)
 
 ---
@@ -366,6 +367,80 @@ justifies it. The model gets to plan; it never gets to do arithmetic.
 
 ### 3.7 Close out
 - [x] 614 tests green, 93% coverage; `ruff check` and `format` clean
+
+---
+
+## M4 — Consistency check and severity inference (complete)
+
+**Goal:** the two things an answer must not do — repeat a wrong past answer, and
+assert a status the data does not support — become detectable in Python before
+the model writes a word. Plus the half of severity the guards cannot decide.
+
+### 4.1 Severity inference (D23)
+- [x] §2 definition spans read from the clause registry, not retyped
+- [x] Tier predicate keeps the deprecated v2 definitions out
+- [x] A guard match never reaches the classifier
+- [x] A span absent from §2 is not believed — an invented citation is caught
+- [x] Severity outside {P1,P2,P3} refused; confidence clamped
+- [x] A classifier that fails, returns nothing, or is absent yields
+      **undetermined**, never a confident P3
+- [x] `LlmSeverityClassifier`, enum-constrained; 7 live tests green
+
+### 4.2 Claim extraction (`src/domain/claims.py`)
+- [x] Both recorded resolutions in the pack read correctly, with topics
+- [x] Thousands separators survive; prose stating no rule yields nothing
+
+### 4.3 `check_data_consistency` (D19)
+- [x] All four classes; ORD-1001 stale, TKT-450 and TKT-451 contradicted
+- [x] The TKT-504 → ORD-1001 link reported as an inference (A3), confidence 0.8
+- [x] A resolved known issue cannot corroborate (KI-176)
+- [x] The contradiction is account-relative — the same sentence is wrong for
+      Northstar and right for an account with no agreement
+- [x] TKT-451 attaches KI-208, because 3,000 is a defect threshold
+- [x] Reports mint as `consistency_report` with the snapshot in provenance
+
+**Deviation as planned:** `check_data_consistency(snapshot_id, *, topics=())`.
+The last two classes are properties of a question, not of a row.
+
+### 4.4 Baseline amendment
+- [x] KI-176 gains `issue_status: Resolved`, one value re-reviewed. The drift
+      test caught the change, which is what it is for.
+
+### 4.5 Golden set
+- [x] GS-019, GS-020, GS-021 computable; `NOT_YET_COMPUTABLE` 17 → 14
+
+### 4.6 Close out
+- [x] 732 tests green, 93% coverage; `ruff check` and `format` clean
+- [x] `scripts/demo_m4.py`, `scripts/calibrate_severity.py`
+
+### Bugs found and fixed during M4
+
+Both in M3's resolver, both on `bulk_upload_limit`, and together they left the
+topic with **no governing clause at all** — so "is 5,000 rows my limit?" had no
+answer from a corpus that states one in plain words. Neither was visible from
+M3's own tests, because no M3 calculator reads that topic.
+
+- **Silence read as disagreement.** `_conflict` compared `params.get(key)`
+  across a group, so a key only one clause mentions came back None for the
+  other and counted as a differing value. Missing-data-is-not-zero, arriving in
+  the precedence layer. Only keys every clause states can now differ.
+- **A defect report outranked the rule it deviates from.** With the above
+  fixed, the same-tier tie-break sorted by clause id and handed the topic to
+  KI-208 — which says in its own text that the supported limit remains 5,000.
+  Known issues are now supporting clauses on every topic: reachable, never
+  governing.
+
+### Findings worth carrying forward
+
+- **Self-reported confidence is a weak proxy for stability.** TKT-504 flipped
+  between P2 and P3 across six runs while reporting 0.85. The threshold catches
+  it, but a model that flipped while reporting 1.00 would pass. Self-consistency
+  sampling is the stronger signal — deferred to M11, where the eval harness can
+  measure whether it helps.
+- **A grounding gate must work on claims, not substrings.** KI-211's
+  instruction contains "pickup did not occur" as a prohibition of saying it. A
+  forbidden-phrase filter would flag the one correct answer. Noted for M7.
+
 
 ---
 
