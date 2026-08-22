@@ -5,11 +5,11 @@ here, so the expectations in this file are the ones that were signed off. If a
 verdict changes there, this fails - which is the whole reason the golden set was
 written before the resolver.
 
-Sixteen of the thirty-two are computable today: cancellation, service credit and
-SLA targets. The rest need consistency checking (M4), the tool layer (M5) or
-answer composition (M7), and the coverage test at the bottom asserts that the
-uncovered set is exactly those and shrinks as milestones land - so this file
-cannot quietly stop testing something.
+Eighteen of the thirty-two are computable today: cancellation, service credit,
+SLA targets and the three conflicts. The rest need the tool layer (M5) or answer
+composition (M7), and the coverage test at the bottom asserts that the uncovered
+set is exactly those and shrinks as milestones land - so this file cannot
+quietly stop testing something.
 
 Nothing is mocked. The database is the committed one, the clauses are the real
 registry, and the arithmetic is the arithmetic that will ship.
@@ -28,6 +28,7 @@ from src.datastore.repo import open_repository
 from src.domain.calculators.cancellation import compute_cancellation_fee
 from src.domain.calculators.credit import compute_service_credit
 from src.domain.calculators.sla import sla_first_response_status
+from src.domain.consistency import ConflictClass, ConsistencyChecker
 from src.domain.evidence import EvidenceKind, open_evidence_store
 from src.domain.resolver import PolicyResolver
 from src.domain.severity import SeverityVerdict, deterministic_severity
@@ -37,6 +38,7 @@ GOLDEN = Path(__file__).resolve().parent / "golden_set.yaml"
 CANCELLATION = ["GS-001", "GS-002", "GS-003", "GS-004", "GS-005", "GS-006"]
 CREDIT = ["GS-007", "GS-008", "GS-009", "GS-010"]
 SLA = ["GS-011", "GS-012", "GS-013", "GS-014", "GS-015"]
+CONFLICT = ["GS-019", "GS-020", "GS-021"]
 
 #: Entries whose acceptance needs a milestone that has not landed. Named
 #: individually so the list is a to-do rather than a shrug.
@@ -44,9 +46,6 @@ NOT_YET_COMPUTABLE = {
     "GS-016": "abstract SLA question with no ticket; needs the tool layer (M5)",
     "GS-017": "tier discipline at the answer surface; needs composition (M7)",
     "GS-018": "deliberate tier-4 read; needs the tool layer (M5)",
-    "GS-019": "staleness conflict; needs check_data_consistency (M4)",
-    "GS-020": "historical contradiction; needs check_data_consistency (M4)",
-    "GS-021": "historical contradiction; needs check_data_consistency (M4)",
     "GS-022": "known-issue matching; needs retrieval in the tool layer (M5)",
     "GS-023": "plan capability; needs the tool layer (M5)",
     "GS-024": "no-source escalation; needs the escalation flow (M7)",
@@ -93,6 +92,8 @@ def _subject_account(entry: dict) -> str:
         "TKT-503": "ACCT-003",
         "TKT-504": "ACCT-001",
         "TKT-505": "ACCT-004",
+        "TKT-450": "ACCT-001",
+        "TKT-451": "ACCT-002",
     }[entry["subject"]]
 
 
@@ -263,15 +264,124 @@ class TestSlaTargets:
         assert golden["GS-011"]["expect"]["target_due"].startswith("2026-08-16")
 
 
+class TestConflicts:
+    """GS-019 to GS-021: the three places the pack contradicts itself.
+
+    Each is a trap for a different reflex. GS-019 punishes picking a side when
+    the data does not support one. GS-020 punishes repeating a recorded answer
+    because it is on file. GS-021 punishes correcting a number without saying
+    where the wrong one came from.
+    """
+
+    def test_the_stale_status_conflict_is_found_and_not_resolved(self, golden, db_path):
+        entry = golden["GS-019"]
+        report = _consistency(entry, db_path)
+        conflict = _one(report, ConflictClass.STALE_STATUS)
+
+        assert report.blocking is True, entry["derivation"]
+        # The clause the answer must follow, and the two records it reconciles.
+        assert entry["expect"]["governing"][0] in conflict.sources
+        assert "TKT-504" in conflict.sources
+        # A3: the ticket names no order. Stating the link as fact is the failure.
+        assert conflict.inference_note is not None
+        assert conflict.confidence < 1.0
+
+    def test_the_stale_status_finding_does_not_assert_the_parcel_is_still_there(
+        self, golden, db_path
+    ):
+        # KI-211 exists precisely because that statement is often false, and the
+        # golden set forbids it in `must_not_assert`.
+        #
+        # Checked against `detail` alone, and the exclusion is deliberate.
+        # KI-211's instruction reads "Before telling a customer that a pickup
+        # did not occur, verify the carrier status" - it contains the forbidden
+        # sentence as a prohibition of it. A grounding gate in M7 that greps the
+        # answer for forbidden phrases will flag the one answer that is right,
+        # so the gate has to work on asserted claims, not on substrings.
+        entry = golden["GS-019"]
+        detail = _one(_consistency(entry, db_path), ConflictClass.STALE_STATUS).detail.lower()
+        for forbidden in entry["expect"]["must_not_assert"]:
+            assert forbidden.lower() not in detail
+        assert "may be stale" in detail
+
+    def test_the_known_issue_instruction_reaches_the_answer(self, golden, db_path):
+        conflict = _one(_consistency(golden["GS-019"], db_path), ConflictClass.STALE_STATUS)
+        assert "verify the carrier status" in conflict.instruction.lower()
+
+    @pytest.mark.parametrize("entry_id", ["GS-020", "GS-021"])
+    def test_a_recorded_answer_that_contradicts_the_current_rule_is_caught(
+        self, golden, db_path, entry_id
+    ):
+        entry = golden[entry_id]
+        conflict = _one(_consistency(entry, db_path), ConflictClass.HISTORICAL_CONTRADICTION)
+
+        assert conflict.basis_clause == entry["expect"]["governing"][0], entry["derivation"]
+        # Tier 5 is what is being corrected, never the authority for it.
+        assert not conflict.basis_clause.startswith("TKT-")
+        assert entry["subject"] in conflict.sources
+
+    def test_the_fee_northstar_was_charged_was_waived_all_along(self, golden, db_path):
+        conflict = _one(
+            _consistency(golden["GS-020"], db_path), ConflictClass.HISTORICAL_CONTRADICTION
+        )
+        assert conflict.claimed_value == 250
+        assert conflict.current_value == golden["GS-020"]["expect"]["amount_inr"] == 0
+
+    def test_the_row_limit_correction_carries_the_defect_that_explains_it(self, golden, db_path):
+        # The subtlest entry in the set. 3,000 is real and is not the limit;
+        # an answer that only corrects the number sends the customer back to a
+        # 3,500-row upload that will fail exactly as before.
+        entry = golden["GS-021"]
+        conflict = _one(_consistency(entry, db_path), ConflictClass.HISTORICAL_CONTRADICTION)
+        assert conflict.claimed_value == entry["check"]["failure_threshold_rows"] == 3000
+        assert conflict.current_value == entry["expect"]["supported_rows"] == 5000
+        assert set(entry["expect"]["governing"]) <= set(conflict.sources)
+        assert "split" in (conflict.instruction or "").lower()
+
+    def test_a_contradiction_advises_and_a_stale_status_blocks(self, golden, db_path):
+        # Different conflicts threaten different things: one says a past answer
+        # was wrong, the other says a current fact may be.
+        assert _consistency(golden["GS-020"], db_path).blocking is False
+        assert _consistency(golden["GS-019"], db_path).blocking is True
+
+
+def _one(report, conflict_class):
+    matching = [c for c in report.conflicts if c.conflict_class == conflict_class]
+    assert len(matching) == 1, f"expected one {conflict_class}, got {[c.detail for c in matching]}"
+    return matching[0]
+
+
+def _consistency(entry: dict, db_path):
+    """The real chain: snapshot, then check, as the tool layer will call it."""
+    principal = principal_for(entry)
+    subject = entry["subject"]
+    with (
+        open_evidence_store(run_id=entry["id"], principal=principal) as store,
+        open_repository(principal, db_path) as repo,
+    ):
+        if subject.startswith("ORD-"):
+            kind = EvidenceKind.ORDER_SNAPSHOT
+            payload = repo.get_order(subject).to_payload()
+        else:
+            kind = EvidenceKind.TICKET_SNAPSHOT
+            payload = repo.get_ticket(subject).to_payload()
+        snapshot = store.mint(kind, payload)
+        checker = ConsistencyChecker(
+            store=store, repository=repo, resolver=PolicyResolver(repo.connection)
+        )
+        return checker.check(snapshot_id=snapshot)
+
+
 class TestCoverage:
     def test_every_entry_is_either_covered_or_explicitly_deferred(self, golden):
-        covered = set(CANCELLATION + CREDIT + SLA)
+        covered = set(CANCELLATION + CREDIT + SLA + CONFLICT)
         deferred = set(NOT_YET_COMPUTABLE)
         assert covered | deferred == set(golden)
         assert not covered & deferred, "an entry is both covered and deferred"
 
     def test_the_deferred_list_shrinks_as_milestones_land(self, golden):
-        # A reminder with teeth: when M4 lands, its entries must move out of
-        # NOT_YET_COMPUTABLE or this number stops being true.
-        assert len(NOT_YET_COMPUTABLE) == 17
+        # A reminder with teeth: when a milestone lands, its entries must move
+        # out of NOT_YET_COMPUTABLE or this number stops being true. M4 took
+        # three out.
+        assert len(NOT_YET_COMPUTABLE) == 14
         assert all(reason for reason in NOT_YET_COMPUTABLE.values())

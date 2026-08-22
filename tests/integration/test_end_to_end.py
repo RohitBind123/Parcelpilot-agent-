@@ -1,9 +1,11 @@
 """The whole pipeline, from the supplied files to retrieved evidence.
 
-This file grows with each milestone. Today it covers M1 and M2: the workbook
-and the six PDFs are built into SQLite, the registry is indexed into a real
-Chroma collection and a real BM25 index, and then each persona asks a real
-question through the real retriever.
+This file grows with each milestone. Today it covers M1 to M4: the workbook and
+the six PDFs are built into SQLite, the registry is indexed into a real Chroma
+collection and a real BM25 index, each persona asks a real question through the
+real retriever, and the whole answering chain - snapshot, resolve, compute,
+cross-check - runs on a database built in this test rather than the committed
+one, so a stale artefact cannot make it pass.
 
 Nothing here is mocked except the embedding model, which is a deterministic
 hashing stand-in so the suite runs offline (D20). Every other layer is the one
@@ -22,6 +24,11 @@ import pytest
 from src.auth.personas import get_persona, to_principal
 from src.datastore.etl import WORKBOOK_PATH, build_database
 from src.datastore.repo import AccessDenied, open_repository
+from src.domain.calculators.cancellation import compute_cancellation_fee
+from src.domain.consistency import ConflictClass, ConflictSeverity, ConsistencyChecker
+from src.domain.evidence import EvidenceKind, open_evidence_store
+from src.domain.resolver import PolicyResolver
+from src.domain.severity import deterministic_severity, infer_severity, load_severity_definitions
 from src.knowledge.ingest import build_registry
 from src.knowledge.registry import load_chunks
 from src.knowledge.retriever import BM25Index, HybridRetriever
@@ -246,3 +253,135 @@ class TestLookupQueries:
             assert isinstance(chunk, Chunk)
             assert chunk.citation.strip()
             assert chunk.text.strip()
+
+
+class TestTheAnsweringChainOnAFreshlyBuiltDatabase:
+    """M3 and M4 end to end, on the database this test built.
+
+    The unit suites run against the committed `parcelpilot.db`. That is the
+    right default - it is what ships - but it means a build regression can hide
+    behind an artefact that was correct when it was generated. Here the PDFs are
+    parsed and the workbook is read in this process, and the same answers have
+    to come out.
+    """
+
+    def test_the_discriminating_pair_survives_a_rebuild(self, pipeline):
+        # INR 0 for Northstar, INR 250 for LumenWorks, from two orders that are
+        # identical in every field the calculator reads except the account.
+        assert _fee(pipeline, "northstar_customer", "ORD-1001") == (0.0, NORTHSTAR_CANCELLATION)
+        assert _fee(pipeline, "lumenworks_customer", "ORD-2001") == (250.0, SOP_CANCELLATION)
+
+    def test_the_staleness_conflict_is_found_through_the_whole_stack(self, pipeline):
+        report = _consistency(pipeline, "northstar_customer", "ORD-1001")
+        conflict = next(
+            c for c in report.conflicts if c.conflict_class is ConflictClass.STALE_STATUS
+        )
+        assert report.blocking is True
+        assert conflict.severity is ConflictSeverity.BLOCKING
+        # All three sources, and the ticket link marked as inferred (A3).
+        assert {"ORD-1001", "TKT-504"} <= set(conflict.sources)
+        assert conflict.inference_note is not None
+
+    def test_the_same_shaped_order_without_a_witness_is_clean(self, pipeline):
+        # ORD-2001 is BOOKED, SwiftShip, no pickup timestamp - and nobody has
+        # said a driver came. If this ever reports a conflict, every answer the
+        # system gives starts arriving hedged.
+        assert _consistency(pipeline, "lumenworks_customer", "ORD-2001").conflicts == ()
+
+    def test_both_historical_contradictions_are_caught(self, pipeline):
+        for persona_id, ticket_id, claimed, current in (
+            ("maya_agent", "TKT-450", 250, 0),
+            ("rohit_agent", "TKT-451", 3000, 5000),
+        ):
+            report = _consistency(pipeline, persona_id, ticket_id)
+            conflict = next(
+                c
+                for c in report.conflicts
+                if c.conflict_class is ConflictClass.HISTORICAL_CONTRADICTION
+            )
+            assert (conflict.claimed_value, conflict.current_value) == (claimed, current)
+            # Advisory: a past answer was wrong, but nothing current is in doubt.
+            assert report.blocking is False
+
+    def test_the_p1_guards_fire_on_exactly_the_two_tickets_they_should(self, pipeline):
+        with open_repository(persona("priya_manager"), pipeline["db_path"]) as repo:
+            fired = {
+                ticket.ticket_id
+                for ticket in repo.query_tickets(status="open")
+                if deterministic_severity(ticket.subject, ticket.description or "")
+            }
+        assert fired == {"TKT-501", "TKT-505"}
+
+    def test_severity_definitions_come_from_the_rebuilt_registry(self, pipeline):
+        import sqlite3
+
+        connection = sqlite3.connect(pipeline["db_path"])
+        try:
+            definitions = load_severity_definitions(connection)
+        finally:
+            connection.close()
+        assert definitions.clause_id == "support_policy_v3_current::§2"
+        assert definitions.clause_id != POLICY_V2
+
+    def test_an_unreachable_classifier_leaves_severity_undetermined_not_low(self, pipeline):
+        # The deployment where the model is down must not silently grade every
+        # ticket P3. It must say it does not know.
+        import sqlite3
+
+        connection = sqlite3.connect(pipeline["db_path"])
+        try:
+            definitions = load_severity_definitions(connection)
+        finally:
+            connection.close()
+        verdict = infer_severity(
+            "Bulk upload fails for 4,200-row CSV",
+            "The CSV reaches roughly 70% and fails.",
+            definitions=definitions,
+            classifier=None,
+        )
+        assert verdict.severity is None
+        assert not verdict.is_trusted
+
+    def test_the_bulk_upload_limit_has_a_governing_clause_at_all(self, pipeline):
+        # Regression: a defect report and the plan capability are both Tier 3
+        # on this topic, and the resolver used to call them an unresolved
+        # conflict - leaving the corpus's plainest statement unanswerable.
+        with PolicyResolver.open(pipeline["db_path"]) as resolver:
+            resolution = resolver.resolve("bulk_upload_limit", persona("lumenworks_customer"))
+        assert resolution.governing.params["supported_rows"] == 5000
+        assert any(c.clause_id.endswith("KI-208") for c in resolution.supporting)
+
+
+def _fee(pipeline, persona_id: str, order_id: str) -> tuple[float | None, str]:
+    principal = persona(persona_id)
+    with open_evidence_store(run_id="e2e", principal=principal) as store:
+        with open_repository(principal, pipeline["db_path"]) as repo:
+            snapshot = store.mint(
+                EvidenceKind.ORDER_SNAPSHOT, repo.get_order(order_id).to_payload()
+            )
+        with PolicyResolver.open(pipeline["db_path"]) as resolver:
+            resolution = resolver.resolve("cancellation_fee", principal)
+        handle = store.mint(
+            EvidenceKind.POLICY_RESOLUTION, resolution.to_payload(), derived_from=[snapshot]
+        )
+        outcome = compute_cancellation_fee(store, snapshot_id=snapshot, resolution_id=handle)
+    return outcome.fee_inr, outcome.governing_clause
+
+
+def _consistency(pipeline, persona_id: str, subject: str):
+    principal = persona(persona_id)
+    with (
+        open_evidence_store(run_id="e2e", principal=principal) as store,
+        open_repository(principal, pipeline["db_path"]) as repo,
+    ):
+        if subject.startswith("ORD-"):
+            kind = EvidenceKind.ORDER_SNAPSHOT
+            payload = repo.get_order(subject).to_payload()
+        else:
+            kind = EvidenceKind.TICKET_SNAPSHOT
+            payload = repo.get_ticket(subject).to_payload()
+        snapshot = store.mint(kind, payload)
+        checker = ConsistencyChecker(
+            store=store, repository=repo, resolver=PolicyResolver(repo.connection)
+        )
+        return checker.check(snapshot_id=snapshot)
