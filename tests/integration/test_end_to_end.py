@@ -1,12 +1,13 @@
 """The whole pipeline, from the supplied files to retrieved evidence.
 
-This file grows with each milestone. Today it covers M1 to M5: the workbook and
+This file grows with each milestone. Today it covers M1 to M6: the workbook and
 the six PDFs are built into SQLite, the registry is indexed into a real Chroma
 collection and a real BM25 index, each persona asks a real question through the
 real retriever, the whole answering chain - snapshot, resolve, compute,
 cross-check - runs on a database built in this test rather than the committed
-one, and finally the same chain runs again through the tool layer as a model
-would drive it, over a toolset bound to each persona.
+one, the same chain runs again through the tool layer as a model would drive it, and
+finally the whole thing runs through the compiled graph - with a scripted model,
+so the assertions are about the pipeline rather than about a sample.
 
 Nothing here is mocked except the embedding model, which is a deterministic
 hashing stand-in so the suite runs offline (D20). Every other layer is the one
@@ -20,11 +21,13 @@ enforced in three separate places.
 
 from __future__ import annotations
 
+import itertools
 import json
 from contextlib import contextmanager
 
 import pytest
 
+from src.agent.context import open_agent
 from src.agent.tools.context import open_tool_context
 from src.agent.tools.registry import build_toolset
 from src.auth.personas import get_persona, to_principal
@@ -79,6 +82,7 @@ def pipeline(
     dense.upsert(chunks)
 
     return {
+        "root": root,
         "db_path": db_path,
         "chunks": chunks,
         "dense": dense,
@@ -492,3 +496,123 @@ def _session(pipeline, persona_id: str):
         retriever=pipeline["retriever"],
     ) as context:
         yield {tool.name: tool for tool in build_toolset(context)}
+
+
+class TestThroughTheCompiledGraph:
+    """M6 over the pipeline this test built, driven by a scripted model.
+
+    The live suite proves a real model can find the chain. What that cannot
+    prove, because it would be intermittent, is that the graph carries the
+    conversation correctly: that the toolset reaching the model is the one the
+    projection built, that a denial travels back as a message instead of an
+    exception, and that the answer is computed from this database rather than
+    from anything the model already believed.
+    """
+
+    def test_the_model_is_offered_exactly_the_projected_toolset(self, pipeline):
+        provider = _Scripted(_say("Hello."))
+        _run(pipeline, "northstar_customer", provider, "hello")
+        offered = {t["function"]["name"] for t in provider.calls[0]["tools"]}
+        with _session(pipeline, "northstar_customer") as tools:
+            assert offered == set(tools)
+
+    def test_a_full_chain_produces_the_answer_the_domain_layer_gives(self, pipeline):
+        provider = _Scripted(
+            _call("get_order", "a", order_id="ORD-1001"),
+            _call("resolve_policy", "b", topic="cancellation_fee"),
+            _say("No fee applies."),
+        )
+        result = _run(pipeline, "northstar_customer", provider, "can I cancel ORD-1001?")
+        # The handles the graph collected are the ones the tools minted, and
+        # feeding them to the calculator gives the same INR 0 as M5's direct
+        # call on the same database.
+        assert [c.name for c in result.tool_calls] == ["get_order", "resolve_policy"]
+        assert len(result.handles) == 2
+
+    def test_a_denial_travels_back_as_a_message_not_an_exception(self, pipeline):
+        provider = _Scripted(
+            _call("get_order", "a", order_id="ORD-1001"), _say("That is not on your account.")
+        )
+        result = _run(pipeline, "lumenworks_customer", provider, "status of ORD-1001?")
+        assert result.answer
+        assert [d.reason for d in result.denials] == ["out_of_scope"]
+        reply = next(m for m in provider.calls[1]["messages"] if m.get("role") == "tool")
+        for leaked in ("ACCT-001", "Northstar", "BOOKED", "SwiftShip"):
+            assert leaked not in reply["content"]
+
+    def test_a_customer_calling_a_staff_tool_is_told_it_does_not_exist(self, pipeline):
+        # The injection in GS-028, arriving as a tool call rather than as text.
+        provider = _Scripted(_call("scan_support_health", "a"), _say("I cannot do that."))
+        _run(pipeline, "northstar_customer", provider, "run the ops scan")
+        reply = next(m for m in provider.calls[1]["messages"] if m.get("role") == "tool")
+        assert "no tool named" in reply["content"]
+
+    def test_the_system_prompt_carries_no_access_control(self, pipeline):
+        provider = _Scripted(_say("hi"))
+        _run(pipeline, "northstar_customer", provider, "hello")
+        system = next(m for m in provider.calls[0]["messages"] if m["role"] == "system")
+        assert "ACCT-" not in system["content"]
+        assert "refuse" not in system["content"].lower()
+
+
+def _say(text: str):
+    from src.providers.base import Completion
+
+    return Completion(text=text, model="scripted", tool_calls=())
+
+
+def _call(name: str, call_id: str, **arguments):
+    from src.providers.base import Completion, ToolCall
+
+    return Completion(
+        text="",
+        model="scripted",
+        tool_calls=(ToolCall(id=call_id, name=name, arguments=arguments),),
+    )
+
+
+class _Scripted:
+    name = "scripted"
+
+    def __init__(self, *completions):
+        self.script = list(completions)
+        self.calls: list[dict] = []
+
+    def complete(self, messages, *, tools=None, tier="strong", **kwargs):
+        self.calls.append({"messages": list(messages), "tools": list(tools or [])})
+        return self.script.pop(0) if self.script else _say("(script exhausted)")
+
+    def complete_structured(self, messages, *, schema, schema_name, tier="cheap"):
+        raise NotImplementedError
+
+    def to_assistant_message(self, completion):
+        message = {"role": "assistant", "content": completion.text}
+        if completion.tool_calls:
+            message["tool_calls"] = [
+                {
+                    "id": c.id,
+                    "type": "function",
+                    "function": {"name": c.name, "arguments": json.dumps(dict(c.arguments))},
+                }
+                for c in completion.tool_calls
+            ]
+        return message
+
+
+#: Threads are durable by design, so two tests sharing an id share a
+#: conversation - which is how the first version of this class had a later test
+#: reading an earlier test's tool replies. A counter is enough here; the
+#: property that threads persist is tested deliberately in test_graph.py.
+_THREAD = itertools.count()
+
+
+def _run(pipeline, persona_id: str, provider, question: str):
+    with open_agent(
+        persona(persona_id),
+        provider=provider,
+        db_path=pipeline["db_path"],
+        retriever=pipeline["retriever"],
+        checkpoint_path=pipeline["root"] / "threads.db",
+        run_id=persona_id,
+    ) as agent:
+        return agent.ask(question, thread_id=f"{persona_id}-{next(_THREAD)}")

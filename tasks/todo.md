@@ -24,7 +24,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 - [x] M3  Precedence resolver + deterministic calculators
 - [x] M4  Consistency check + severity inference
 - [x] M5  Tools with typed evidence handles + ACL projection
-- [ ] M6  Agent graph (LangGraph ReAct), CLI harness
+- [x] M6  Agent graph (LangGraph StateGraph), CLI harness
 - [ ] M7  Fact-block composition + claim-level grounding gate
 - [ ] M8  FastAPI + SSE + confirmation gate
 - [ ] M9  Streamlit client: threads, trace panel, conflict badge, confirm card, resume
@@ -504,6 +504,78 @@ curried with the Principal before the first LLM call.
   claim, and a substring filter over evidence flags the correct answer. **M7's
   grounding gate must work on claims, not strings.** Two independent instances
   now; this is a design requirement, not a test quirk.
+
+
+---
+
+## M6 — Agent graph and CLI harness (complete)
+
+**Goal:** the model starts driving. One graph, tools bound before the first
+call, durable threads, and a CLI that answers the brief's two example questions
+from both sides of each discriminating pair.
+
+### 6.0 Framework deviation, measured not assumed — done
+- [x] `langchain-openai` + Gemini fails on the second tool turn:
+      `400 Function call is missing a thought_signature`. Reproduced, and
+      recorded in `tests/integration/test_langchain_constraint_live.py`, which
+      **fails if the constraint ever goes away** — so the deviation expires by
+      itself rather than outliving its reason.
+- [x] `StateGraph` with a model node over our own `ChatProvider`; the
+      checkpointer, `thread_id` and `interrupt()` M8 needs still come from
+      LangGraph. Messages stay in the provider's wire shape end to end.
+
+### 6.1–6.3 Graph, prompts, CLI — done
+- [x] Toolset bound once, identical on every turn
+- [x] Multiple calls per turn, each answered by `tool_call_id`
+- [x] An invented tool name, a denial and bad arguments all come back as
+      messages; none aborts the run
+- [x] Bounded at 8 tool turns, and stopping is reported rather than hidden
+- [x] Threads are durable and isolated; the system prompt is written once,
+      decided from the checkpointer
+- [x] Prompts contain no account id, no tool list, no instruction to refuse —
+      enforced by `test_prompts.py`
+- [x] `scripts/ask.py` with `--demo`, `--trace`, `--thread`
+
+### 6.4 The four answers — done, live
+```
+Northstar  ORD-1001  -> no fee; agreement overrides SOP; BOOKED may be stale
+LumenWorks ORD-2001  -> INR 250; the agreement exists and defers
+LumenWorks 3h credit -> NOT eligible; agreement replaces the 2h threshold with 4
+Beacon     3h credit -> eligible; asks which shipment rather than inventing a fee
+```
+- [x] 14 live acceptance tests, asserting substance rather than wording
+- [x] The model finds the chain unprompted, and never passes a handle no tool
+      minted
+
+### Bugs found and fixed during M6
+
+- **Live tests were never deselected.** The `live` marker documents itself as
+  "deselected by default" and CLAUDE.md says the same; `addopts` never did it.
+  Every plain `pytest` since M0 hit real providers and would fail on a machine
+  with no keys. **991 passed in 150s → 953 passed, 38 deselected, in 8s.**
+- **The severity threshold had no margin.** M4 set 0.95 from six samples where
+  TKT-502 never dropped below 1.00. Twelve samples found it at exactly 0.95 —
+  on the line. Recalibrated to 0.93, the measured midpoint.
+- **A live test sampled a coin once.** Asserting one TKT-504 draw sat below the
+  threshold flaked, which is the M4 caveat arriving in practice rather than a
+  new problem. Now three samples, satisfied by instability or low confidence.
+- **`_STARTED` as a module-level set** would have inserted a second system
+  prompt mid-conversation after a restart, and shared one across users under
+  the M8 server. Replaced by reading the checkpointer.
+- **Shared `thread_id` between end-to-end tests** let one test read another's
+  tool replies. Threads are durable by design; tests must not share ids.
+
+### Findings worth carrying forward
+
+- **The model has the facts and still hedges.** Beacon's credit answer recited
+  the 2-hour rule and left the reader to apply it, despite having called
+  `resolve_policy` and seen there was no agreement. A prompt line closed it for
+  now; **M7's fact block is the structural fix** — Python states the verdict and
+  the model writes prose around it, rather than deciding how much to commit.
+
+### 6.5 Close out — done
+- [x] End-to-end grows a compiled-graph section driven by a scripted model
+- [x] 958 offline tests green (8s), 38 live green; 93.6% coverage; lint clean
 
 
 ---
