@@ -45,7 +45,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 ## Still open (none block starting)
 
 - [x] ~~Tool-calling reliability on Gemini~~ — closed in M0 via thought_signature echo
-- [ ] Write and review the ~25-clause `params` baseline (M2)
+- [x] Write and review the ~25-clause `params` baseline (M2)
 - [ ] Chroma Cloud database provisioning + free-tier limits (M2)
 - [ ] Numeric severity-confidence cut-off — behaviour settled, value not (M4)
 - [ ] Railway topology: one service or two (M12)
@@ -181,41 +181,45 @@ the validator instead, and it validates everything rather than a tail. Confidenc
 scoring still earns its place: it tells the reviewer where to look.
 
 ### 2.1 Text normalisation
-- [ ] RED: pypdf's doubled spaces and mid-word line breaks are repaired
-- [ ] RED: bullet glyphs, non-breaking spaces and soft hyphens normalise
-- [ ] RED: normalisation is idempotent
-- [ ] GREEN: `src/knowledge/pdftext.py`
+- [x] RED: pypdf's doubled spaces and mid-word line breaks are repaired
+- [x] RED: bullet glyphs, non-breaking spaces and soft hyphens normalise
+- [x] RED: normalisation is idempotent
+- [x] GREEN: `src/knowledge/pdftext.py`
 
 ### 2.2 Topic taxonomy
-- [ ] `src/knowledge/topics.py`: the curated enum from ARCHITECTURE §5.3
-- [ ] RED: every topic is reachable from at least one clause in the corpus
-- [ ] RED: no clause ends up untagged
+- [x] `src/knowledge/topics.py`: the curated enum from ARCHITECTURE §5.3
+- [x] RED: every topic is reachable from at least one clause in the corpus
+- [x] RED: no clause ends up untagged
 
 ### 2.3 Clause segmentation and metadata
-- [ ] RED: 6 documents parse; each yields the expected clause count
-- [ ] RED: tier, account scope, status and effective dates come from the header,
+- [x] RED: 6 documents parse; each yields the expected clause count
+- [x] RED: tier, account scope, status and effective dates come from the header,
       not from a hardcoded table keyed on filename
-- [ ] RED: Policy v2 is tier 4 and marked DEPRECATED; agreements are tier 1 and
+- [x] RED: Policy v2 is tier 4 and marked DEPRECATED; agreements are tier 1 and
       account-scoped; SOP v4 and Policy v3 are tier 2
-- [ ] RED: clause text is verbatim, and `clause_id` is stable across runs
-- [ ] GREEN: `src/knowledge/clause_parser.py`
+- [x] RED: clause text is verbatim, and `clause_id` is stable across runs
+- [x] GREEN: `src/knowledge/clause_parser.py`
 
 ### 2.4 Typed params + reviewed baseline (D24)
-- [ ] RED: the discriminating params extract correctly —
+- [x] RED: the discriminating params extract correctly —
       SOP `free_window_minutes=30` / `fee_after_window_inr=250`,
       Northstar `waiver=true` / `fee_inr=0`,
       LumenWorks `overrides=false` on cancellation but
       `threshold_hours=4` / `credit_inr=300` on credits
-- [ ] RED: the nine v2/v3 response-target cells extract as a typed grid
-- [ ] RED: confidence scoring flags a clause whose numbers did not parse
-- [ ] **REVIEW GATE:** print the baseline as a readable table for sign-off
-- [ ] GREEN: `clause_params_baseline.yaml` committed
-- [ ] RED: `test_clause_params.py` asserts `ingest(pdf) == baseline`, clause by clause
+- [x] RED: the nine v2/v3 response-target cells extract as a typed grid
+- [x] RED: confidence scoring flags a clause whose numbers did not parse
+- [x] **REVIEW GATE:** print the baseline as a readable table for sign-off
+- [x] GREEN: `clause_params_baseline.yaml` committed
+- [x] RED: `test_clause_params.py` asserts `ingest(pdf) == baseline`, clause by clause
 
 ### 2.5 Registry persistence
-- [ ] `clauses` and `chunks` tables added to `schema.sql`
-- [ ] RED: registry rebuild is idempotent and account-scoped reads work
-- [ ] GREEN: extend `etl.py` / add `src/knowledge/ingest.py`
+**Deviation:** no `chunks` table. The clauses are one paragraph each (longest is 73
+words, median 44), so a chunker would only ever split a rule away from the numbers that
+qualify it. The clause *is* the chunk; `clause_topics` carries the tagging that a
+chunk table would otherwise have held.
+- [x] `clauses` and `clause_topics` tables added to `schema.sql`
+- [x] RED: registry rebuild is idempotent and account-scoped reads work
+- [x] GREEN: extend `etl.py` / add `src/knowledge/ingest.py`
 
 ### 2.6 Vector store (D20)
 - [ ] `VectorStore` protocol; `ChromaLocalStore` and `ChromaCloudStore`
