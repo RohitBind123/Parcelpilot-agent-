@@ -1,0 +1,61 @@
+# ParcelPilot AI Support System — tooling configuration.
+# Packaging is deliberately not configured: the app runs from source
+# (see README), so there is no wheel to build and no version to bump.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "app", "scripts", "tests"]
+# Ruff 0.16 formats Python inside Markdown fences. The docs use hand-aligned
+# snippets and ASCII diagrams that are illustrative, not compilable, so they
+# are excluded rather than silently rewritten.
+extend-exclude = ["*.md", ".venv", "data", "project_docs"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "SIM",      # simplify
+    "RUF",      # ruff-specific
+    "DTZ",      # flake8-datetimez — naive datetimes are a bug in this codebase (D6)
+    "ARG",      # unused arguments
+    "PTH",      # prefer pathlib
+]
+ignore = [
+    "E501",     # line length is enforced by the formatter, not the linter
+    "B008",     # FastAPI's Depends() in defaults is idiomatic
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The clock is the one module allowed to name the forbidden functions, in a
+# docstring explaining why they are forbidden. Tests may build naive datetimes
+# as fixtures for the parser to reject.
+"src/clock.py" = ["DTZ"]
+"tests/**" = ["DTZ", "ARG"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "live: hits a real provider or Chroma Cloud; deselected by default (-m 'not live')",
+    "eval: golden-set or RAGAS run; slow and LLM-judged",
+]
+filterwarnings = ["error::DeprecationWarning:src.*"]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+omit = ["src/api/main.py", "*/__init__.py"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]

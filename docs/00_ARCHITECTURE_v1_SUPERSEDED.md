@@ -1,3 +1,17 @@
+> **SUPERSEDED — retained for provenance only.**
+>
+> This is v1.1, written *before* the data pack was opened. Seven of its assumptions were
+> falsified by inspection (corpus size, same-tier conflicts, ticket severity, the business-hours
+> consequences of a Sunday snapshot, free-tier availability, embeddings availability, and the
+> success-metric denominator), and its central bet — scripted pipelines ahead of planning (D11) —
+> was reversed after review.
+>
+> **The ground truth is [`ARCHITECTURE.md`](./ARCHITECTURE.md) v2.0.**
+> The evidence that replaced this document is [`01_DATA_PACK_FINDINGS.md`](./01_DATA_PACK_FINDINGS.md).
+> Do not implement against this file.
+
+---
+
 # ParcelPilot AI Support System — Architecture
 
 **Version:** 1.1 (design, pre-implementation)
