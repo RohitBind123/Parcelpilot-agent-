@@ -11,6 +11,7 @@ of them inspect the signature rather than the results.
 from __future__ import annotations
 
 import inspect
+import logging
 from pathlib import Path
 
 import pytest
@@ -262,7 +263,7 @@ class TestAnUnindexedIdentityIsNotAnEmptyIndex:
         assert store.count() == 0
         assert collections_on_disk(tmp_path / "index") == set()
 
-    def test_a_collection_that_exists_but_is_empty_returns_no_rows(self, tmp_path):
+    def test_a_collection_that_exists_but_is_empty_returns_no_rows(self, tmp_path, caplog):
         """The counterpart to absence, and the reason the two are separated.
 
         An empty collection has been searched and had nothing to say, so `[]`
@@ -274,7 +275,12 @@ class TestAnUnindexedIdentityIsNotAnEmptyIndex:
         store = ChromaLocalStore(embeddings=HashingEmbeddings(), persist_dir=tmp_path / "index")
         store._client.get_or_create_collection(name=store.collection_name)
 
-        assert store.query("cancellation fee", principal=persona("maya_agent")) == []
+        with caplog.at_level(logging.WARNING, logger="src.knowledge.vectorstore.chroma"):
+            assert store.query("cancellation fee", principal=persona("maya_agent")) == []
+        # Returning [] is right and saying nothing is not: this state is only
+        # reachable through a half-written index, and it is indistinguishable
+        # from a corpus with no answer unless someone says so.
+        assert "holds no vectors" in caplog.text
 
     def test_an_empty_corpus_is_still_refused_by_upsert(self, tmp_path):
         # The only way an existing-but-empty collection could arise once the

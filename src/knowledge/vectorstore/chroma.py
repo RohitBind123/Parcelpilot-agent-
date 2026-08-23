@@ -161,6 +161,14 @@ class ChromaStore:
         # would make `n_results` disagree with what is there.
         available = int(collection.count())
         if available == 0:
+            # Reachable only through a write that created the collection and
+            # then failed before adding to it, since `upsert` refuses an empty
+            # corpus and reads no longer create. Silence here would look
+            # exactly like a corpus with nothing to say.
+            logger.warning(
+                "collection %s exists but holds no vectors; the index may be half-written",
+                self.collection_name,
+            )
             return []
 
         result = collection.query(
