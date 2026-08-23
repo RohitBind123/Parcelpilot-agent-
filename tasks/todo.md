@@ -867,6 +867,67 @@ and makes it a poor path for demonstrating the happy case.
 
 ---
 
+## M9 — Streamlit client
+
+**Goal (build order §21):** threads, new chat, delete, trace panel, conflict
+badge, confirm card, and a mid-run refresh that reattaches.
+
+**Ground truth:** ARCHITECTURE §17. A thin client over the M8 API - it holds no
+domain logic, computes no number, and decides no permission. Everything it
+shows came from an event or an endpoint.
+
+### Why thin, specifically
+
+The temptation in a Streamlit app is to reach into `src/` directly, because it
+is all one process and the imports are right there. That would undo M8: the
+projection, the grounding gate and the confirmation token all live behind the
+API, and a client that bypasses them is demonstrating something other than the
+product. The client gets a session token and speaks HTTP, the same as any other
+consumer would.
+
+### 9.1 Transport
+- [ ] `ui/api.py` - a typed client over the M8 routes; SSE parsed with the
+      `id:` field so reattach uses the sequence the server gave, not a count
+- [ ] Errors surface the envelope's `code`, never a traceback
+
+### 9.2 Shell
+- [ ] Persona picker in the sidebar; switching logs in again rather than
+      mutating a session, because the role is server-resolved
+- [ ] Thread list, new chat, delete
+- [ ] Session token and thread id mirrored to the URL query params, so a
+      refresh is a reattach rather than a restart
+
+### 9.3 Chat
+- [ ] Fact block rendered as a distinct card **above** the prose, matching the
+      order the events arrive in
+- [ ] Prose appended from `token.delta`
+- [ ] Citations with document, clause ref and tier badge
+- [ ] Denial notice on `tool.denied` - stated plainly, per §4.4
+
+### 9.4 Trace panel
+- [ ] Live tool calls with arguments, outcome and evidence handle
+- [ ] Conflict badge, loud, on `conflict.detected` or an override in
+      `policy.resolved`
+
+### 9.5 The confirmation card
+- [ ] Preview, advisories, Confirm and Cancel
+- [ ] Confirm posts the token to `/runs/{id}/resume`, then reattaches from the
+      sequence the stream closed on
+- [ ] Cancel does the same with `confirm: false`
+
+### 9.6 Resume
+- [ ] On mount, `GET /runs/active`; reattach if a run is live or awaiting
+- [ ] A refresh mid-run picks the stream back up rather than losing it
+
+### 9.7 Tests
+- [ ] Unit tests for the transport and the event reducer, with no browser -
+      the reducer is where the display logic actually lives
+- [ ] Playwright end-to-end against a real server and a real browser
+- [ ] Full suite green, lint clean
+
+
+---
+
 ## Review
 
 _To be filled in as milestones complete._
