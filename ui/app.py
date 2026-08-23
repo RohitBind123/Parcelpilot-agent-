@@ -409,6 +409,63 @@ def sidebar(api: ParcelPilotClient) -> dict[str, Any] | None:  # pragma: no cove
     return principal
 
 
+SEVERITY_TONE = {"P1": "error", "P2": "warning"}
+
+
+def render_ops(api: ParcelPilotClient) -> None:  # pragma: no cover - browser-tested
+    """The ops page (ARCHITECTURE 14).
+
+    Renders `GET /ops/findings`, which calls the same `scan_support_health` the
+    chat calls. Visible only to a role that holds the scope - and the endpoint
+    refuses anyway, because a hidden button is a UI preference and not access
+    control.
+    """
+    st.subheader("Support health")
+    try:
+        report = api.ops_findings()
+    except ApiError as exc:
+        st.error(f"{exc.code}: {exc}")
+        return
+
+    st.caption(report.get("measurability_note", ""))
+
+    findings = report.get("findings") or []
+    if not findings:
+        st.success("Nothing needs attention.")
+    for finding in findings:
+        tone = SEVERITY_TONE.get(finding.get("severity"))
+        with st.container(border=True):
+            headline = finding.get("headline", "")
+            if tone == "error":
+                st.error(f"**{headline}**")
+            elif tone == "warning":
+                st.warning(f"**{headline}**")
+            else:
+                st.info(f"**{headline}**")
+            st.write(finding.get("detail", ""))
+            if finding.get("suggested_action"):
+                st.markdown(f"**What the guide says** — {finding['suggested_action']}")
+            if finding.get("evidence"):
+                st.caption("Evidence: " + ", ".join(str(e) for e in finding["evidence"] if e))
+            if st.button("Ask about this", key=f"ask_{finding['finding_id']}"):
+                # Seeds a chat message, so the drill-down is one click and the
+                # answer comes from the same tools rather than from this page.
+                st.session_state.seeded = f"Explain finding {finding['finding_id']}: {headline}"
+                st.session_state.page = "Chat"
+                st.rerun()
+
+    with st.expander("What was checked", expanded=False):
+        # Signals that found nothing still report. "We looked and there is
+        # nothing" and "we did not look" are different statements.
+        for entry in report.get("signals") or []:
+            mark = "checked" if entry.get("checked") else "not run"
+            st.markdown(
+                f"- **{entry['signal'].replace('_', ' ')}** — {mark}, "
+                f"{entry.get('found', 0)} finding(s)"
+                + (f". {entry['note']}" if entry.get("note") else "")
+            )
+
+
 def main() -> None:  # pragma: no cover - exercised by the Playwright suite
     st.set_page_config(page_title="ParcelPilot", page_icon=":package:", layout="wide")
     for key, default in (
@@ -420,10 +477,25 @@ def main() -> None:  # pragma: no cover - exercised by the Playwright suite
     ):
         st.session_state.setdefault(key, default)
 
+    st.session_state.setdefault("page", "Chat")
+    st.session_state.setdefault("seeded", None)
+
     api = client()
     with st.sidebar:
-        if sidebar(api) is None:
+        principal = sidebar(api)
+        if principal is None:
             st.stop()
+        # Only offered to a role that holds the scope. The endpoint refuses
+        # regardless - hiding a control is a preference, not access control.
+        if "read:ops_detection" in (principal.get("scopes") or []):
+            st.divider()
+            st.session_state.page = st.radio(
+                "View", ["Chat", "Ops"], key="page_choice", horizontal=True
+            )
+
+    if st.session_state.page == "Ops":
+        render_ops(api)
+        return
 
     thread_id = st.session_state.thread_id or st.query_params.get("thread")
     if not thread_id:
@@ -451,6 +523,8 @@ def main() -> None:  # pragma: no cover - exercised by the Playwright suite
             st.session_state.view = RunView()
 
     question = st.chat_input("Ask about an order, a ticket, or a policy")
+    if st.session_state.seeded:
+        question, st.session_state.seeded = st.session_state.seeded, None
     if question:
         with st.chat_message("user"):
             st.markdown(question)

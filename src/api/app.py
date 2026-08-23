@@ -234,6 +234,25 @@ def create_app(service: AgentService | None = None) -> FastAPI:
         )
         return ok({"run_id": run_id, "resumed": True})
 
+    # -- ops ----------------------------------------------------------------
+
+    @app.get("/ops/findings")
+    def ops_findings(caller: CallerDep, service: ServiceDep) -> dict[str, Any]:
+        """The support-health scan (ARCHITECTURE 14).
+
+        Same `scan_support_health` the chat calls. A second implementation for
+        "the page version" is how a dashboard and a conversation come to
+        disagree about the same queue.
+        """
+        return ok(service.scan(caller[0]))
+
+    @app.get("/ops/findings/{finding_id}")
+    def ops_finding(finding_id: str, caller: CallerDep, service: ServiceDep) -> dict[str, Any]:
+        found = service.explain(caller[0], finding_id)
+        if found is None:
+            raise ApiError.not_found("no such finding")
+        return ok(found)
+
     # -- health -------------------------------------------------------------
 
     @app.get("/healthz")

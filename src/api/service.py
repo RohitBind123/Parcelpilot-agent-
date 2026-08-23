@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from src.agent.context import open_agent
+from src.api.envelope import ApiError
 from src.api.events import RunBus
 from src.api.runner import RunExecutor
 from src.auth.principal import Principal
@@ -212,6 +213,35 @@ class AgentService:
             if delivered:
                 messages.append({"role": "assistant", "content": delivered, "run_id": run.run_id})
         return messages
+
+    def scan(self, principal: Principal) -> dict[str, Any]:
+        """The support-health scan, through the tool the chat uses.
+
+        Through the toolset rather than straight to `HealthScanner`, so the
+        projection decides who may run it. A route that reached past the tool
+        layer would be a fourth way to ask the same question and the only one
+        with no access control on it.
+        """
+        return self._through_tool(principal, "scan_support_health") or {}
+
+    def explain(self, principal: Principal, finding_id: str) -> dict[str, Any] | None:
+        return self._through_tool(principal, "explain_finding", finding_id=finding_id)
+
+    def _through_tool(
+        self, principal: Principal, name: str, **arguments: Any
+    ) -> dict[str, Any] | None:
+        from src.agent.tools.registry import build_toolset
+
+        with self._open(principal, "ops", "ops", "ops") as agent:
+            tool = next((t for t in build_toolset(agent.tool_context) if t.name == name), None)
+            if tool is None:
+                # Absent from this role's toolset. The caller turns it into the
+                # same 404 a missing record gets, because "you may not" and
+                # "there is none" must not be distinguishable from outside.
+                raise ApiError.not_found("no such finding")
+            outcome = tool(**arguments)
+        payload = outcome.to_payload()
+        return None if payload.get("error") or payload.get("denied") else payload
 
     def provider_names(self) -> dict[str, str]:
         settings = get_settings()

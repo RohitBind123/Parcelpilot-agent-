@@ -158,6 +158,12 @@ class ParcelPilotClient:
                 )
             yield from _parse_sse(response.iter_lines())
 
+    def ops_findings(self) -> dict[str, Any]:
+        return self._request("GET", "/ops/findings") or {}
+
+    def ops_finding(self, finding_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/ops/findings/{finding_id}") or {}
+
     def health(self) -> dict[str, Any]:
         return self._request("GET", "/healthz")
 
