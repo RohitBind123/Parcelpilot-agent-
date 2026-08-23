@@ -62,6 +62,21 @@ DENIAL_SCRIPT = {
     ]
 }
 
+#: The same run, slowed down so the in-progress state can be looked at. A
+#: scripted model is instant, which makes "did a spinner appear?" untestable
+#: without either a real provider's variance or a deliberate pause.
+SLOW_SCRIPT = {
+    "steps": [
+        {
+            "tool_calls": [
+                {"id": "c1", "name": "get_order", "arguments": {"order_id": "ORD-1001"}}
+            ],
+            "delay_ms": 1500,
+        },
+        {"text": ORDER_ANSWER, "delay_ms": 6000},
+    ]
+}
+
 ANSWER_SCRIPT = {
     "steps": [
         {"tool_calls": [{"id": "c1", "name": "get_order", "arguments": {"order_id": "ORD-1001"}}]},
@@ -165,9 +180,28 @@ def script(servers, body: dict) -> None:
     httpx.post(f"{servers['api']}/__test__/script", json=body, timeout=10.0).raise_for_status()
 
 
-def sign_in(page, persona_label: str = "Northstar Logistics (customer)") -> None:
+#: The sidebar is two-level: a context, then an identity within it. The tests
+#: name identities by their leading words so a label reworded after the em dash
+#: does not break every test in the file.
+IDENTITIES = {
+    "Northstar Logistics": "Customer",
+    "Lumenworks": "Customer",
+    "Beacon Retail": "Customer",
+    "Axis Freight": "Customer",
+    "Maya": "ParcelPilot staff",
+    "Rohit": "ParcelPilot staff",
+    "Priya": "ParcelPilot staff",
+}
+
+
+def sign_in(page, identity: str = "Northstar Logistics") -> None:
+    """Pick the context, then the identity within it, then sign in."""
+    context = IDENTITIES[identity]
+    page.get_by_test_id("stSidebar").get_by_text(context, exact=True).click()
+    page.wait_for_timeout(1200)
     page.get_by_test_id("stSelectbox").click()
-    page.get_by_text(persona_label, exact=True).click()
+    page.wait_for_timeout(500)
+    page.get_by_text(identity, exact=False).last.click()
     page.get_by_role("button", name="Sign in", exact=True).click()
     page.wait_for_timeout(2500)
 
@@ -185,7 +219,7 @@ def ask(page, question: str, settle: int = 9000) -> None:
 
 class TestSigningIn:
     def test_the_page_starts_signed_out(self, page):
-        assert "Choose a persona and sign in." in page.inner_text("body")
+        assert "Choose an identity and sign in." in page.inner_text("body")
 
     def test_signing_in_shows_the_role_the_server_resolved(self, page):
         # The role is not something the client chose. It appears because the
@@ -195,9 +229,12 @@ class TestSigningIn:
         assert "ACCT-001" in page.inner_text("body")
 
     def test_a_staff_persona_gets_a_staff_role(self, page):
-        sign_in(page, "Maya (support agent)")
+        sign_in(page, "Maya")
         body = page.inner_text("body")
-        assert "support_agent" in body
+        # "support agent", not "support_agent": a role is shown to a reader and
+        # the underscore is a database detail.
+        assert "support agent" in body
+        assert "support_agent" not in body
         # Staff carry no account id; the Principal refuses to hold one.
         assert "ACCT-001" not in body
 
@@ -235,11 +272,90 @@ class TestAnsweringAQuestion:
         sign_in(page)
         new_chat(page)
         ask(page, "Can I cancel ORD-1001?")
-        page.get_by_text("Trace -", exact=False).click()
+        page.get_by_text("Trace —", exact=False).click()
         page.wait_for_timeout(700)
         trace = page.inner_text("body")
         assert "get_order" in trace
         assert "ORD-1001" in trace
+
+
+class TestTheWaitIsNarrated:
+    """Nothing is silent between asking and answering.
+
+    A blank assistant bubble for ninety seconds is indistinguishable from a
+    broken one, and that is precisely how this looked before: the client had
+    every tool event and rendered none of them until the prose arrived.
+    """
+
+    def test_a_status_appears_before_any_answer_does(self, page, servers):
+        script(servers, SLOW_SCRIPT)
+        sign_in(page)
+        new_chat(page)
+        page.get_by_test_id("stChatInputTextArea").fill("Can I cancel ORD-1001?")
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(2500)
+        body = page.inner_text("body")
+        # Something is on screen, and it is not the answer yet.
+        assert "…" in body
+        assert ORDER_ANSWER not in body
+
+    def test_the_trail_names_the_work_in_plain_words(self, page, servers):
+        script(servers, SLOW_SCRIPT)
+        sign_in(page)
+        new_chat(page)
+        page.get_by_test_id("stChatInputTextArea").fill("Can I cancel ORD-1001?")
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(3500)
+        # The reader sees a sentence, not `get_order`. Checked mid-run: the
+        # trail is cleared when the run ends, because the Trace expander keeps
+        # the detail and a finished answer should not carry its own scaffolding.
+        assert "Looking up the order ORD-1001" in page.inner_text("body")
+
+    def test_no_raw_tool_name_is_visible_before_the_trace_is_opened(self, page, servers):
+        script(servers, ANSWER_SCRIPT)
+        sign_in(page)
+        new_chat(page)
+        ask(page, "Can I cancel ORD-1001?")
+        # `get_order` lives behind the collapsed expander. Anywhere else it is
+        # a database identifier shown to somebody asking about a parcel.
+        visible = page.inner_text("body")
+        assert "get_order" not in visible
+
+    def test_the_status_reports_how_long_it_took(self, page, servers):
+        script(servers, ANSWER_SCRIPT)
+        sign_in(page)
+        new_chat(page)
+        ask(page, "Can I cancel ORD-1001?")
+        assert "Answered" in page.inner_text("body")
+
+
+class TestTwoUserContexts:
+    """The brief asks for two contexts, and the picker has to show two.
+
+    A flat list of seven identities reads as seven products - which is exactly
+    how it was read the first time somebody opened it.
+    """
+
+    def test_both_contexts_are_offered(self, page):
+        sidebar = page.get_by_test_id("stSidebar").inner_text()
+        assert "Customer" in sidebar
+        assert "ParcelPilot staff" in sidebar
+
+    def test_the_customer_context_lists_only_customers(self, page):
+        page.get_by_test_id("stSelectbox").click()
+        page.wait_for_timeout(600)
+        options = page.inner_text("body")
+        assert "Northstar Logistics" in options
+        assert "Maya" not in options
+
+    def test_switching_context_changes_the_identities(self, page):
+        page.get_by_text("ParcelPilot staff", exact=True).click()
+        page.wait_for_timeout(1200)
+        page.get_by_test_id("stSelectbox").click()
+        page.wait_for_timeout(600)
+        options = page.inner_text("body")
+        assert "Maya" in options
+        assert "Northstar Logistics" not in options
 
 
 class TestDenialsAreVisible:
@@ -256,8 +372,12 @@ class TestDenialsAreVisible:
         new_chat(page)
         ask(page, "What is happening with ORD-1003?")
         body = page.inner_text("body")
-        assert "get_order" in body
-        assert "not available on your account" in body or "was not available" in body
+        # Stated in words. This asserted `get_order` was on the page until the
+        # refusal was humanised - the raw name now lives only behind the
+        # collapsed trace, which is where a tool identifier belongs.
+        assert "Looking up the order ORD-1003 was refused" in body
+        assert "not on this account" in body
+        assert "get_order" not in body
 
 
 class TestTheConfirmationCard:
@@ -266,7 +386,7 @@ class TestTheConfirmationCard:
         sign_in(page)
         new_chat(page)
         ask(page, "Escalate the billing contact question")
-        assert "Confirm this action" in page.inner_text("body")
+        assert "Confirm:" in page.inner_text("body")
         assert page.get_by_role("button", name="Confirm", exact=True).count() == 1
         assert page.get_by_role("button", name="Cancel", exact=True).count() == 1
 
@@ -276,7 +396,9 @@ class TestTheConfirmationCard:
         new_chat(page)
         ask(page, "Escalate the billing contact question")
         body = page.inner_text("body")
-        assert "Create Escalation" in body
+        assert "Escalation raised" in body.replace(
+            "Confirm: escalation raised", "Escalation raised"
+        )
         assert "billing contact" in body
 
     def test_confirming_takes_the_card_down_and_finishes_the_run(self, page, servers):
@@ -287,8 +409,44 @@ class TestTheConfirmationCard:
         page.get_by_role("button", name="Confirm", exact=True).click()
         page.wait_for_timeout(9000)
         body = page.inner_text("body")
-        assert "Confirm this action" not in body
+        assert "Confirm:" not in body
         assert "I have raised that with a person." in body
+
+    def test_confirming_leaves_a_receipt(self, page, servers):
+        """Confirm and Cancel must not look the same afterwards.
+
+        An action that happens silently is one the person has to go and
+        verify, which is the opposite of what a confirmation step is for.
+        """
+        script(servers, ESCALATION_SCRIPT)
+        sign_in(page)
+        new_chat(page)
+        ask(page, "Escalate the billing contact question")
+        page.get_by_role("button", name="Confirm", exact=True).click()
+        page.wait_for_timeout(9000)
+        body = page.inner_text("body")
+        assert "Escalation raised" in body
+        assert "Reference" in body
+
+    def test_cancelling_leaves_no_receipt(self, page, servers):
+        script(servers, ESCALATION_SCRIPT)
+        sign_in(page)
+        new_chat(page)
+        ask(page, "Escalate the billing contact question")
+        page.get_by_role("button", name="Cancel", exact=True).click()
+        page.wait_for_timeout(9000)
+        assert "Escalation raised" not in page.inner_text("body")
+
+    def test_the_preview_is_labelled_not_dumped_as_json(self, page, servers):
+        # The last screen before a change is authorised. `"question":` in a
+        # JSON tree is a database key shown at the worst possible moment.
+        script(servers, ESCALATION_SCRIPT)
+        sign_in(page)
+        new_chat(page)
+        ask(page, "Escalate the billing contact question")
+        body = page.inner_text("body")
+        assert "Their question" in body
+        assert '"question"' not in body
 
     def test_cancelling_takes_the_card_down_too(self, page, servers):
         script(servers, ESCALATION_SCRIPT)
@@ -297,7 +455,7 @@ class TestTheConfirmationCard:
         ask(page, "Escalate the billing contact question")
         page.get_by_role("button", name="Cancel", exact=True).click()
         page.wait_for_timeout(9000)
-        assert "Confirm this action" not in page.inner_text("body")
+        assert "Confirm:" not in page.inner_text("body")
 
     def test_the_confirmation_token_is_not_rendered_into_the_page(self, page, servers):
         """The gate's integrity property, checked at the last possible layer.
@@ -333,6 +491,6 @@ class TestResumeAfterRefresh:
         page.reload(wait_until="networkidle")
         page.wait_for_timeout(4000)
         body = page.inner_text("body")
-        assert "Choose a persona and sign in." not in body
+        assert "Choose an identity and sign in." not in body
         # The conversation is read back from the server, not from memory.
         assert "Can I cancel ORD-1001?" in body

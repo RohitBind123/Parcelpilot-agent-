@@ -184,6 +184,41 @@ class TestTheConfirmationCard:
         assert view.error == "boom"
 
 
+class TestTheReceipt:
+    """Confirming and cancelling must not look the same afterwards."""
+
+    def test_an_executed_action_is_kept(self):
+        view = fold(
+            events(
+                (
+                    "action.executed",
+                    {
+                        "action_id": "act_1",
+                        "kind": "create_escalation",
+                        "occurred_at": "2026-08-16",
+                    },
+                )
+            )
+        )
+        assert len(view.executed) == 1
+        assert view.executed[0]["action_id"] == "act_1"
+
+    def test_a_run_with_no_action_has_no_receipt(self):
+        assert fold(ANSWERED).executed == ()
+
+    def test_the_receipt_survives_completion(self):
+        # It is the answer to "did that happen?", which is asked after the run
+        # ends rather than during it.
+        view = fold(
+            [
+                (1, "action.executed", {"action_id": "act_1", "kind": "create_escalation"}),
+                (2, "run.completed", {"run_id": RUN}),
+            ]
+        )
+        assert view.executed
+        assert view.is_finished
+
+
 class TestPartialStreams:
     def test_a_finish_without_its_start_is_still_recorded(self):
         """A reattach can begin after the `tool.started` it needs.

@@ -136,6 +136,10 @@ def compose(
         caution = _caution(conflicts)
         if caution:
             rows.append(FactRow("Caution", caution))
+        if instruction := _instruction(conflicts):
+            rows.append(FactRow("What to do", instruction))
+        if inferred := _inference(conflicts):
+            rows.append(FactRow("Inferred link", inferred))
             figures.update(figures_in(caution))
 
     return FactBlock(rows=tuple(rows), figures=frozenset(figures), citable=frozenset(citable))
@@ -295,21 +299,30 @@ def _basis(calc: Mapping[str, Any], sla: Mapping[str, Any]) -> str:
 
 
 def _caution(report: Mapping[str, Any]) -> str:
-    """Conflicts, in the corpus's own words.
+    """What is inconsistent, and nothing else."""
+    return " ".join(c.get("detail", "") for c in report.get("conflicts") or () if c.get("detail"))
 
-    The instruction is carried verbatim: KI-211 does not merely describe the
-    webhook lag, it says what to do about it, and a model paraphrasing can drop
-    the part that matters.
+
+def _instruction(report: Mapping[str, Any]) -> str:
+    """What the corpus says to do about it, verbatim.
+
+    Its own row rather than appended to the caution. KI-211 does not merely
+    describe the webhook lag, it says what to do about it, and a reader
+    skimming a paragraph loses the sentence that tells them.
     """
-    said = []
-    for conflict in report.get("conflicts") or ():
-        line = conflict.get("detail", "")
-        if conflict.get("inference_note"):
-            line += f" (the link is inferred, not recorded: {conflict['inference_note']})"
-        if conflict.get("instruction"):
-            line += f" {conflict['instruction']}"
-        said.append(line)
-    return " ".join(said)
+    return " ".join(c["instruction"] for c in report.get("conflicts") or () if c.get("instruction"))
+
+
+def _inference(report: Mapping[str, Any]) -> str:
+    """Where a link between records was inferred rather than read (A3).
+
+    Also its own row. Concatenated into the caution it read as a parenthetical
+    aside in the middle of a paragraph - which is where a disclosure goes to be
+    skipped, and this one is the difference between a fact and a guess.
+    """
+    return " ".join(
+        c["inference_note"] for c in report.get("conflicts") or () if c.get("inference_note")
+    )
 
 
 # -- figures ----------------------------------------------------------------

@@ -449,7 +449,11 @@ class TestTheTranscriptIsWhatWasDelivered:
         ).json()["data"]["run_id"]
         await events_for(client, token, run)
         transcript = (await client.get("/threads/t1/messages", headers=auth(token))).json()["data"]
-        assert transcript[0] == {"role": "user", "content": "where is ORD-1001?"}
+        # `run_id` rides along so a client watching a run live can leave that
+        # turn out and avoid rendering the answer twice.
+        assert transcript[0]["role"] == "user"
+        assert transcript[0]["content"] == "where is ORD-1001?"
+        assert transcript[0]["run_id"] == run
 
     async def test_turns_come_back_in_order(self, client, script):
         script[:] = [say("First answer."), say("Second answer.")]

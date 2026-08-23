@@ -18,6 +18,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Final
 
+from ui.labels import describe
+
 #: Run states the client distinguishes. `awaiting` is not a failure and not a
 #: completion: the graph is parked and the person is the next actor.
 RUNNING: Final = "running"
@@ -57,6 +59,9 @@ class RunView:
     citations: tuple[str, ...] = ()
     grounding: Mapping[str, Any] | None = None
     escalation: Mapping[str, Any] | None = None
+    #: Actions actually carried out, in order. The receipt for a confirmation:
+    #: without it, clicking Confirm and clicking Cancel look the same.
+    executed: tuple[Mapping[str, Any], ...] = ()
     #: The confirmation card, while one is pending. Cleared once answered.
     pending: Mapping[str, Any] | None = None
     confirm_token: str | None = None
@@ -64,6 +69,14 @@ class RunView:
     #: The highest sequence number folded in. What a reattach asks to continue
     #: from, so it is the server's number rather than a count of what arrived.
     last_seq: int = 0
+    #: What the agent is doing right now, in words a customer can read. Kept on
+    #: the view rather than derived at render time so a reattach shows the same
+    #: line the live stream showed.
+    activity: str = ""
+    #: When the server started the run, ISO-8601. The elapsed counter is
+    #: anchored to this rather than to a local clock, so a rerun or a refresh
+    #: does not restart it at zero.
+    started_at: str | None = None
 
     @property
     def denials(self) -> tuple[ToolStep, ...]:
@@ -93,6 +106,12 @@ def apply(view: RunView, seq: int, event: str, data: Mapping[str, Any]) -> RunVi
     """Fold one event into the view. Never mutates; always returns a new one."""
     handler = _HANDLERS.get(event)
     updated = handler(view, data) if handler else {}
+    # An event with nothing to say leaves the previous line standing. Replacing
+    # "Looking up order ORD-1001" with a generic "Working" is a downgrade the
+    # reader notices, so `describe` returns None rather than a filler string.
+    said = describe(event, data)
+    if said:
+        updated.setdefault("activity", said)
     # `max` rather than assignment: a replay that overlaps a live stream can
     # deliver an older sequence, and the reattach point must never go
     # backwards or the client would ask for events it already has.
@@ -111,7 +130,11 @@ def fold(events: Iterable[tuple[int, str, Mapping[str, Any]]], view: RunView | N
 
 
 def _started(view: RunView, data: Mapping[str, Any]) -> dict[str, Any]:
-    return {"run_id": data.get("run_id", view.run_id), "status": RUNNING}
+    return {
+        "run_id": data.get("run_id", view.run_id),
+        "status": RUNNING,
+        "started_at": data.get("started_at") or view.started_at,
+    }
 
 
 def _tool_started(view: RunView, data: Mapping[str, Any]) -> dict[str, Any]:
@@ -190,6 +213,10 @@ def _await_confirm(_view: RunView, data: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _executed(view: RunView, data: Mapping[str, Any]) -> dict[str, Any]:
+    return {"executed": (*view.executed, dict(data))}
+
+
 def _completed(_view: RunView, data: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "status": COMPLETED,
@@ -223,6 +250,7 @@ _HANDLERS: Final[dict[str, Any]] = {
     "grounding.checked": _grounding,
     "run.escalated": _escalated,
     "interrupt.await_confirm": _await_confirm,
+    "action.executed": _executed,
     "run.completed": _completed,
     "run.failed": _failed,
 }

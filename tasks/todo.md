@@ -26,8 +26,8 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 - [x] M5  Tools with typed evidence handles + ACL projection
 - [x] M6  Agent graph (LangGraph StateGraph), CLI harness
 - [x] M7  Fact-block composition + claim-level grounding gate
-- [ ] M8  FastAPI + SSE + confirmation gate
-- [ ] M9  Streamlit client: threads, trace panel, conflict badge, confirm card, resume
+- [x] M8  FastAPI + SSE + confirmation gate
+- [x] M9  Streamlit client: threads, trace panel, conflict badge, confirm card, resume
 - [ ] M10 Ops page + proactive detection
 - [ ] M11 Evaluation: pytest invariants, golden set, RAGAS
 - [ ] M12 Docs, demo video, Railway deploy
@@ -1015,6 +1015,66 @@ test by reverting the fix and watching it fail.
 do" both pass with 0 claims and no escalation; TKT-503 still declines and still
 drafts a record; a declined answer's transcript shows the escalation, not the
 draft.
+
+
+---
+
+## Interlude — the wait, and the words (after M9)
+
+Six things, all found by using the running app rather than by a failing test.
+
+### 1. The wait looked like a crash — complete
+
+Between sending a question and the first token, the assistant bubble was
+empty for up to ninety seconds. Every event needed to narrate it was already
+on the wire and the client discarded all of them.
+
+`ui/labels.py` turns each event into a line a reader can use, and `consume`
+renders a live status with an elapsed counter and a trail of what has been
+done. The counter is anchored to a server timestamp on `run.started`, not to a
+local clock: Streamlit rebuilds the page on every rerun and a locally-started
+counter would reset to zero each time.
+
+### 2. Tool names were about to reach customers — complete
+
+`check_data_consistency` is precise and a terrible thing to show somebody
+asking about a parcel. Every tool now has a phrase, and a test asserts the map
+covers the projection matrix - so a tool added without one fails the suite
+rather than appearing under its own name in front of a customer.
+
+### 3. `unresolved_conflict` was on the page — complete
+
+Verbatim, as the escalation reason. That is the "internal enum keys never reach
+users" rule broken in the most literal way available. Escalation reasons,
+denial reasons, action kinds and payload keys all have wording now, each with
+an exhaustiveness test against the enum it covers.
+
+### 4. Confirming an action told you nothing — complete
+
+The gate paused, the card appeared, Confirm was clicked - and the UI said
+nothing about whether anything had happened. `execute_action` returns
+`{executed, action_id, kind}` and the client dropped it. There is now an
+`action.executed` event and a receipt: "Escalation raised · Reference act_…".
+Without it, Confirm and Cancel look identical afterwards, which defeats the
+point of asking.
+
+### 5. The answer rendered twice — complete
+
+Caused by the M8 transcript fix: rebuilt from run events, a run *in flight*
+contributes its partial text, so the client rendered it once from the
+transcript and once from the stream. Transcript messages now carry `run_id`
+and the client skips the turn it is already showing.
+
+### 6. Seven identities read as seven agents — complete
+
+Fair reading of a flat list, and the brief says two *user contexts*. The picker
+is now context-first: Customer or ParcelPilot staff, then an identity within
+it. Nothing about the architecture changed; the labelling was wrong.
+
+Also: the fact block's Caution row was a paragraph with a parenthetical
+provenance note buried mid-sentence. Split into Caution, What to do, and
+Inferred link - the last is an A3 disclosure and was the easiest thing on the
+page to skip.
 
 
 ---

@@ -199,14 +199,18 @@ class AgentService:
         """
         messages: list[dict[str, Any]] = []
         for run in self.store.runs_for_thread(thread_id):
-            messages.append({"role": "user", "content": run.question})
+            # Tagged with the run it came from. A client watching a run live is
+            # already rendering that run's text, and without the tag it has no
+            # way to leave it out - which shows the answer twice, once from the
+            # stream and once from here.
+            messages.append({"role": "user", "content": run.question, "run_id": run.run_id})
             delivered = "".join(
                 str(event.payload.get("text", ""))
                 for event in self.store.events_since(run.run_id, from_seq=0)
                 if event.event == "token.delta"
             )
             if delivered:
-                messages.append({"role": "assistant", "content": delivered})
+                messages.append({"role": "assistant", "content": delivered, "run_id": run.run_id})
         return messages
 
     def provider_names(self) -> dict[str, str]:
