@@ -32,6 +32,7 @@ from langgraph.types import Command
 from src.agent.answer import assemble
 from src.agent.graph import summarise
 from src.api.events import RunBus
+from src.clock import wall_now
 from src.datastore.runtime import RuntimeStore
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,18 @@ class RunExecutor:
 
     def start(self, *, run_id: str, thread_id: str, question: str) -> None:
         opening = {"messages": self._agent._opening(question, thread_id)}
-        self._bus.emit(run_id, "run.started", {"run_id": run_id, "thread_id": thread_id})
+        # `started_at` travels with the event so the client's elapsed counter
+        # is anchored to the server rather than to whenever the page last
+        # rendered. A Streamlit rerun would otherwise restart it at zero.
+        self._bus.emit(
+            run_id,
+            "run.started",
+            {
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "started_at": wall_now().isoformat(),
+            },
+        )
         self._drive(run_id=run_id, thread_id=thread_id, question=question, payload=opening)
 
     def resume(self, *, run_id: str, thread_id: str, question: str, answer: Mapping[str, Any]):
@@ -147,6 +159,21 @@ class RunExecutor:
         if body.get("error"):
             self._bus.emit(run_id, "tool.error", {**common, "error": body.get("message")})
             return
+
+        if body.get("executed"):
+            # Its own event. Buried in a `tool.finished` payload the one thing
+            # the person actually asked for - did it happen? - is indis-
+            # tinguishable from any other tool returning successfully.
+            self._bus.emit(
+                run_id,
+                "action.executed",
+                {
+                    "action_id": body.get("action_id"),
+                    "kind": body.get("kind"),
+                    "occurred_at": body.get("occurred_at"),
+                    "evidence_chain": body.get("evidence_chain", []),
+                },
+            )
 
         handle = next((body[k] for k in _HANDLE_KEYS if body.get(k)), None)
         self._bus.emit(

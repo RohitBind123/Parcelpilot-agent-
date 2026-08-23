@@ -128,10 +128,13 @@ class TestTheRowsOfTheArchitecture:
     def test_the_caution_carries_the_corpus_instruction(self, block):
         # KI-211 says what to do, and a model rewriting it can drop the part
         # that matters.
-        assert "verify the carrier status" in row(block, "Caution").value.lower()
+        assert "verify the carrier status" in row(block, "What to do").value.lower()
 
     def test_an_inference_is_labelled_as_one(self, block):
-        assert "inferred" in row(block, "Caution").value.lower()
+        # Its own row now. Buried in the caution paragraph it read as an aside,
+        # and this disclosure is the difference between a fact and a guess (A3).
+        assert row(block, "Inferred link") is not None
+        assert "TKT-504" in row(block, "Inferred link").value
 
 
 class TestAbsenceIsNotZero:

@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -51,9 +52,18 @@ class ScriptedProvider:
         self.script = script
 
     def complete(self, messages, *, tools=None, tier="strong", **kwargs):
-        if self.script:
-            return self.script.pop(0)
-        return Completion(text="The script ran out.", model="scripted/test", tool_calls=())
+        if not self.script:
+            return Completion(text="The script ran out.", model="scripted/test", tool_calls=())
+        step = self.script.pop(0)
+        # A scripted model answers instantly, which makes the in-progress state
+        # unobservable: a browser test cannot assert that a spinner appeared if
+        # the run finished before the first screenshot. `delay_ms` buys the
+        # tests a run slow enough to look at, without a real provider's
+        # variance.
+        pause = DELAYS.pop(id(step), 0)
+        if pause:
+            time.sleep(pause / 1000)
+        return step
 
     def complete_structured(self, messages, *, schema, schema_name, tier="cheap"):
         raise NotImplementedError("the browser tests do not exercise structured output")
@@ -72,13 +82,22 @@ class ScriptedProvider:
         return message
 
 
+#: How long each scripted step should take, keyed by the Completion's identity.
+#: Beside the script rather than on `Completion`, which is a provider type and
+#: has no business carrying a test's timing.
+DELAYS: dict[int, int] = {}
+
+
 def _to_completion(spec: dict[str, Any]) -> Completion:
     """One step of a script, as JSON a test can post."""
     calls = tuple(
         ToolCall(id=c.get("id", f"c{i}"), name=c["name"], arguments=c.get("arguments", {}))
         for i, c in enumerate(spec.get("tool_calls") or [])
     )
-    return Completion(text=spec.get("text", ""), model="scripted/test", tool_calls=calls)
+    step = Completion(text=spec.get("text", ""), model="scripted/test", tool_calls=calls)
+    if spec.get("delay_ms"):
+        DELAYS[id(step)] = int(spec["delay_ms"])
+    return step
 
 
 def build() -> Any:
@@ -103,6 +122,7 @@ def build() -> Any:
     async def set_script(request: Request) -> dict[str, Any]:
         """Replace the pending script. Test-only, and only in this module."""
         body = await request.json()
+        DELAYS.clear()
         SCRIPT[:] = [_to_completion(step) for step in body.get("steps", [])]
         return ok({"steps": len(SCRIPT)})
 
@@ -111,4 +131,4 @@ def build() -> Any:
 
 app = build()
 
-__all__ = ["SCRIPT", "SECRET", "app", "build"]
+__all__ = ["DELAYS", "SCRIPT", "SECRET", "app", "build"]
