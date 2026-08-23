@@ -177,6 +177,30 @@ class TestTheActionLogIsImmutable:
             store.connection.execute("DELETE FROM actions")
         assert store.get_action(recorded.action_id) is not None
 
+    def test_the_same_confirmation_nonce_cannot_execute_twice(self, store):
+        """Single use, enforced by the log rather than beside it.
+
+        A replayed confirmation token is refused by the same UNIQUE constraint
+        that makes the log immutable, in the same statement that would have
+        written the effect. Separate "seen nonces" bookkeeping could succeed
+        while the effect failed, or the reverse.
+        """
+        append(store, nonce="nonce-abc")
+        with pytest.raises(ImmutableLogError, match="already been executed"):
+            append(store, nonce="nonce-abc")
+
+    def test_a_different_nonce_is_a_different_action(self, store):
+        append(store, nonce="nonce-1")
+        append(store, nonce="nonce-2")
+        assert len(store.actions_for_thread("thread-1")) == 2
+
+    def test_actions_without_a_nonce_do_not_collide(self, store):
+        # SQLite treats NULLs as distinct under UNIQUE, which is what allows an
+        # action appended outside the gate to exist more than once.
+        append(store)
+        append(store)
+        assert len(store.actions_for_thread("thread-1")) == 2
+
     def test_appending_the_same_action_id_twice_is_refused(self, store):
         recorded = append(store)
         with pytest.raises(ImmutableLogError):

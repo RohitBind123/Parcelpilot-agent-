@@ -83,6 +83,12 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS actions (
     seq                 INTEGER PRIMARY KEY AUTOINCREMENT,
     action_id           TEXT NOT NULL UNIQUE,
+    -- The confirmation nonce this action executed under. UNIQUE, so replaying
+    -- a token is refused by the same constraint that makes the log immutable,
+    -- atomically with the effect rather than by separate bookkeeping that can
+    -- drift. NULL is allowed and repeatable in SQLite, for the rare action
+    -- appended outside the gate.
+    nonce               TEXT UNIQUE,
     kind                TEXT NOT NULL,
     payload_json        TEXT NOT NULL,
     evidence_chain_json TEXT NOT NULL,
@@ -136,6 +142,9 @@ class ActionRecord:
     evidence_chain: tuple[str, ...]
     principal_id: str
     thread_id: str
+    #: The confirmation nonce this executed under, when it went through the
+    #: gate. None for an action appended outside it.
+    nonce: str | None
     #: Domain time. Frozen at AS_OF, so the record is dated in the world the
     #: answer describes.
     occurred_at: datetime
@@ -259,17 +268,24 @@ class RuntimeStore:
         principal_id: str,
         thread_id: str,
         action_id: str | None = None,
+        nonce: str | None = None,
     ) -> ActionRecord:
-        """Write one action. There is no update and no delete, by design."""
+        """Write one action. There is no update and no delete, by design.
+
+        Passing the confirmation `nonce` makes the write single-use: a replayed
+        token hits the UNIQUE constraint and is refused here, atomically with
+        the effect it was trying to repeat.
+        """
         resolved_id = action_id or f"act_{_new_id()}"
         occurred, recorded = as_of(), wall_now()
         try:
             cursor = self.connection.execute(
-                "INSERT INTO actions (action_id, kind, payload_json, evidence_chain_json, "
-                "principal_id, thread_id, occurred_at, recorded_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO actions (action_id, nonce, kind, payload_json, "
+                "evidence_chain_json, principal_id, thread_id, occurred_at, recorded_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     resolved_id,
+                    nonce,
                     kind.value,
                     json.dumps(dict(payload), sort_keys=True),
                     json.dumps(list(evidence_chain)),
@@ -280,9 +296,11 @@ class RuntimeStore:
                 ),
             )
         except sqlite3.IntegrityError as exc:
-            # The id is unique, so this is a replay. Raised rather than
-            # ignored: an executed action that silently does nothing the second
-            # time is indistinguishable from one that worked.
+            # A replay. Raised rather than ignored: an executed action that
+            # silently does nothing the second time is indistinguishable from
+            # one that worked.
+            if nonce is not None and "nonce" in str(exc):
+                raise ImmutableLogError("this confirmation has already been executed") from exc
             raise ImmutableLogError(f"action {resolved_id} is already recorded") from exc
         self.connection.commit()
 
@@ -294,6 +312,7 @@ class RuntimeStore:
             evidence_chain=tuple(evidence_chain),
             principal_id=principal_id,
             thread_id=thread_id,
+            nonce=nonce,
             occurred_at=occurred,
             recorded_at=recorded,
         )
@@ -381,6 +400,7 @@ def _to_action(row: sqlite3.Row) -> ActionRecord:
         evidence_chain=tuple(json.loads(row["evidence_chain_json"])),
         principal_id=row["principal_id"],
         thread_id=row["thread_id"],
+        nonce=row["nonce"],
         occurred_at=datetime.fromisoformat(row["occurred_at"]),
         recorded_at=datetime.fromisoformat(row["recorded_at"]),
     )
