@@ -56,3 +56,7 @@ data/embedding_cache.db*
 # LangGraph checkpointer: runtime conversation state, written by every run
 # (see src/agent/context.py DEFAULT_CHECKPOINT_PATH). Never committed.
 data/threads.db*
+
+# Runtime state: sessions, the action log, run events
+# (see src/datastore/runtime.py). Never committed.
+data/runtime.db*

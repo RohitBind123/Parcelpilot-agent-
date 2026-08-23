@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Final
 
-from src.agent.tools import authority, calculations, structured
+from src.agent.tools import actions, authority, calculations, structured
 from src.agent.tools.base import Tool
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -59,9 +59,6 @@ PROJECTION: Final[dict[str, frozenset[str]]] = {
 UNIMPLEMENTED: Final[dict[str, str]] = {
     "scan_support_health": "proactive detection (M10)",
     "explain_finding": "proactive detection (M10)",
-    "prepare_action": "confirmation gate (M8)",
-    "execute_action": "confirmation gate (M8)",
-    "approve_credit": "confirmation gate (M8)",
 }
 
 _BUILDERS: Final[dict[str, Callable[[ToolContext], Tool]]] = {
@@ -76,7 +73,19 @@ _BUILDERS: Final[dict[str, Callable[[ToolContext], Tool]]] = {
     "compute_service_credit": calculations.compute_service_credit,
     "sla_first_response_status": calculations.sla_first_response_status,
     "check_data_consistency": calculations.check_data_consistency,
+    "prepare_action": actions.prepare_action,
+    "execute_action": actions.execute_action,
+    "approve_credit": actions.approve_credit,
 }
+
+#: Built into the toolset but withheld from the schema the model is shown.
+#:
+#: `execute_action` is driven by the graph after a human confirms, with the
+#: token the client sent. Offering it to the model would give it vocabulary for
+#: performing an action without one - the same containment argument as the
+#: projection matrix itself, one level in. It stays a real tool so that it is
+#: still subject to the matrix and testable on its own.
+MODEL_INVISIBLE: Final[frozenset[str]] = frozenset({"execute_action"})
 
 
 class ProjectionError(RuntimeError):
@@ -117,8 +126,12 @@ def tool_names(tools: Iterable[Tool]) -> set[str]:
 
 
 def to_schemas(tools: Sequence[Tool]) -> list[dict]:
-    """The `tools` argument for a chat completion."""
-    return [tool.to_schema() for tool in tools]
+    """The `tools` argument for a chat completion.
+
+    Filters `MODEL_INVISIBLE`, so a tool can exist in the toolset without the
+    model having a name for it.
+    """
+    return [tool.to_schema() for tool in tools if tool.name not in MODEL_INVISIBLE]
 
 
 def _startup_check() -> None:

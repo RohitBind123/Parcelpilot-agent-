@@ -123,6 +123,10 @@ class Settings(BaseSettings):
     chroma_database: str = "parcelpilot"
     chroma_persist_dir: Path = Field(default=Path("data/index"))
     sqlite_path: Path = Field(default=Path("data/parcelpilot.db"))
+    #: Sessions, the action log and run events. Separate from `sqlite_path`,
+    #: which is committed, read-only at runtime and rebuilt rather than
+    #: migrated - the next build would delete anything runtime wrote there.
+    runtime_path: Path = Field(default=Path("data/runtime.db"))
 
     # --- clock (raw; parsed only by src.clock) ---------------------------
     as_of: str = ""
@@ -198,6 +202,10 @@ class Settings(BaseSettings):
     @property
     def db_path(self) -> Path:
         return self._absolute(self.sqlite_path)
+
+    @property
+    def runtime_db_path(self) -> Path:
+        return self._absolute(self.runtime_path)
 
     @staticmethod
     def _absolute(candidate: Path) -> Path:

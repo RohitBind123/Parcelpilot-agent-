@@ -510,11 +510,18 @@ class TestThroughTheCompiledGraph:
     """
 
     def test_the_model_is_offered_exactly_the_projected_toolset(self, pipeline):
+        from src.agent.tools.registry import MODEL_INVISIBLE
+
         provider = _Scripted(_say("Hello."))
         _run(pipeline, "northstar_customer", provider, "hello")
         offered = {t["function"]["name"] for t in provider.calls[0]["tools"]}
         with _session(pipeline, "northstar_customer") as tools:
-            assert offered == set(tools)
+            # The schema is the toolset minus what M8 withholds. Asserted as a
+            # difference rather than a literal set so this keeps testing the
+            # projection rather than turning into a list that has to be edited
+            # every time a tool lands.
+            assert set(tools) - offered == MODEL_INVISIBLE
+            assert offered == set(tools) - MODEL_INVISIBLE
 
     def test_a_full_chain_produces_the_answer_the_domain_layer_gives(self, pipeline):
         provider = _Scripted(
