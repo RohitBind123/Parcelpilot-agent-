@@ -1079,6 +1079,63 @@ page to skip.
 
 ---
 
+## M10 — Ops page + proactive detection
+
+**Goal (build order §21):** `GET /ops/findings` returns the five expected
+findings; drill-down works in chat. Unblocks GS-031, the last golden entry.
+
+**Ground truth:** ARCHITECTURE §14, and the derived table in findings §9.
+
+### One implementation, two surfaces
+
+The ops page and the chat drill-down call the same `scan_support_health`. A
+second code path for "the same question asked in a different place" is how the
+page and the chat end up disagreeing, and the disagreement is always found by a
+customer rather than by us.
+
+### Why not clustering — settled in §14, restated because it is the design
+
+Seven tickets. Embedding clustering is unstable and spike detection is
+meaningless at that n. The primary signal is matching tickets against the Known
+Issues document: stable at low volume, explainable, and it ties Problem 1 back
+to the corpus. A cluster labelled by a known issue is actionable; an unlabelled
+one is not.
+
+### 10.1 The scanner
+- [ ] `src/domain/detection.py` — `Signal`, `Finding`, `ScanReport`, `HealthScanner`
+- [ ] Deterministic `finding_id` so a drill-down can name one across requests
+- [ ] Ranked: unmet-and-past-target P1 first, then recurrence, then the rest
+
+### 10.2 The signals (§14 table)
+- [ ] Known-issue recurrence — ticket → KI entry, counted per issue
+- [ ] First-response-target risk — elapsed vs target, `measurable: false` always
+- [ ] Severity concentration — derived severity by account and plan
+- [ ] Cross-account impact — same KI on ≥2 accounts. **Returns nothing on this
+      pack, and says so.** Manufacturing one would be data augmentation.
+- [ ] Unmatched high severity — P1 with no matching KI → possible new incident
+- [ ] Historical contradiction — a Tier 5 resolution against current Tier 1-3
+- [ ] Volume spike — suppressed at n=7, with the reason stated rather than the
+      signal quietly omitted
+
+### 10.3 Tools
+- [ ] `scan_support_health` and `explain_finding`, manager-only, leaving
+      `UNIMPLEMENTED` empty
+- [ ] `explain_finding` takes a finding id and returns its evidence chain
+
+### 10.4 API and page
+- [ ] `GET /ops/findings`, `GET /ops/findings/{id}` — staff only, 404 for a
+      customer in the same words as a missing record
+- [ ] Ops page in the client, visible only when the role carries the scope
+- [ ] "Ask about this" seeds a chat message, so the drill-down is one click
+
+### 10.5 Close out
+- [ ] GS-031 computable; `NOT_YET_COMPUTABLE` reaches zero
+- [ ] The five expected findings asserted by test, in order
+- [ ] Suite green, lint clean
+
+
+---
+
 ## Review
 
 _To be filled in as milestones complete._
