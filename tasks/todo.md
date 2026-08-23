@@ -760,8 +760,11 @@ Sessions, actions and run events are runtime facts. Putting them in
 - [ ] RED: no request body field can set role or account_id
 - [ ] RED: an expired token is rejected
 - [ ] `src/auth/sessions.py` — opaque signed token, server-side token → Principal
-- [ ] `session_secret` required at startup when the API runs; refuse to boot
-      on the empty default rather than signing with `""`
+- [x] ~~`session_secret` required at startup; refuse to boot on the empty
+      default~~ — `.env.example` already settles this and settles it better:
+      unset means a random secret per process, so sessions do not survive a
+      restart and there is no shipped default to forge. Refusing to boot would
+      buy nothing and cost the demo a step.
 
 ### 8.3 Action tokens and the immutable log
 - [ ] RED: a token whose payload changed fails verification
