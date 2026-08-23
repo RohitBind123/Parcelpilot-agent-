@@ -470,6 +470,13 @@ class RuntimeStore:
         row = self.connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         return None if row is None else _to_run(row)
 
+    def runs_for_thread(self, thread_id: str, limit: int = 200) -> tuple[RunRecord, ...]:
+        rows = self.connection.execute(
+            "SELECT * FROM runs WHERE thread_id = ? ORDER BY created_at, rowid LIMIT ?",
+            (thread_id, min(limit, 500)),
+        ).fetchall()
+        return tuple(_to_run(row) for row in rows)
+
     def active_run_for(self, persona_id: str) -> RunRecord | None:
         """The most recent resumable run, for the reattach flow.
 

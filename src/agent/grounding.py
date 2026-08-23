@@ -175,12 +175,20 @@ def ground(
     sources: Mapping[str, str],
     extractor: ClaimExtractor,
 ) -> GateOutcome:
-    """Grade a draft against the evidence it was supposed to be written from."""
-    # Structural first, and before the extractor is consulted. If nothing
-    # governs the topic there is no answer to grade, only prose to discard.
-    if block.is_empty and not sources:
-        return GateOutcome(verdict=Verdict.NO_BASIS, prose=prose)
+    """Grade a draft against the evidence it was supposed to be written from.
 
+    What is graded is what the answer *asserts about ParcelPilot* - its
+    policies, its records, the customer's account. An answer that asserts none
+    of that has nothing to ground, and there is no clause that could support it
+    or contradict it.
+
+    That is why the structural check is no longer first. Deciding NO_BASIS on
+    "no evidence was retrieved" alone treats "the answer needed a source and
+    has none" and "the answer needed no source" as the same state, and they are
+    opposites: the first must be declined and the second is a greeting. The
+    observable symptom was that "hello" and "tell me what you can do" both
+    escalated to a human.
+    """
     invented = check_figures(prose, block, sources)
 
     try:
@@ -190,8 +198,17 @@ def ground(
         return GateOutcome(verdict=Verdict.UNCHECKED, prose=prose, invented_figures=invented)
 
     if not extracted:
-        logger.warning("claim extraction returned nothing for %d characters of prose", len(prose))
-        return GateOutcome(verdict=Verdict.UNCHECKED, prose=prose, invented_figures=invented)
+        # The extractor succeeded and found nothing to ground. It raises when
+        # it fails, so this is an answer that made no assertion rather than an
+        # extractor that made no answer - a distinction `_to_claims` exists to
+        # preserve. An invented figure still fails: a number the sources do not
+        # contain is an assertion however the sentence around it is phrased.
+        verdict = Verdict.FAILED if invented else Verdict.PASSED
+        return GateOutcome(verdict=verdict, prose=prose, invented_figures=invented)
+
+    if block.is_empty and not sources:
+        # Claims were made and there is nothing they could rest on.
+        return GateOutcome(verdict=Verdict.NO_BASIS, prose=prose)
 
     claims = tuple(Claim(text) for text in extracted)
     supported_by = _evidence_text(block, sources)
