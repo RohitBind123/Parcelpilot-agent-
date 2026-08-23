@@ -155,14 +155,22 @@ class RunExecutor:
             {**common, "evidence_id": handle, "summary": _summarise_result(body)},
         )
         if message.get("name") == "resolve_policy":
+            # `governing_clause` is the tool's key; the event schema in
+            # ARCHITECTURE 16 calls it `governing`. Reading `governing` off the
+            # tool payload silently produced null, and the client rendered the
+            # word "None" beside a real override.
             self._bus.emit(
                 run_id,
                 "policy.resolved",
                 {
                     "topic": body.get("topic"),
-                    "governing": body.get("governing"),
+                    "governing": body.get("governing_clause"),
+                    "citation": body.get("governing_citation"),
+                    "is_override": bool(body.get("is_override")),
                     "overridden": body.get("overridden", []),
-                    "excluded": body.get("excluded", []),
+                    "deferred": body.get("deferred", []),
+                    "supporting": body.get("supporting", []),
+                    "unresolved_conflict": bool(body.get("unresolved_conflict")),
                 },
             )
         for conflict in body.get("conflicts", ()) or ():

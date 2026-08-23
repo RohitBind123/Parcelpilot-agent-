@@ -867,6 +867,99 @@ and makes it a poor path for demonstrating the happy case.
 
 ---
 
+## M9 — Streamlit client — complete
+
+**Goal (build order §21):** threads, new chat, delete, trace panel, conflict
+badge, confirm card, and a mid-run refresh that reattaches.
+
+**Ground truth:** ARCHITECTURE §17. A thin client over the M8 API - it holds no
+domain logic, computes no number, and decides no permission. Everything it
+shows came from an event or an endpoint.
+
+### Why thin, specifically
+
+The temptation in a Streamlit app is to reach into `src/` directly, because it
+is all one process and the imports are right there. That would undo M8: the
+projection, the grounding gate and the confirmation token all live behind the
+API, and a client that bypasses them is demonstrating something other than the
+product. The client gets a session token and speaks HTTP, the same as any other
+consumer would.
+
+### 9.1 Transport
+- [x] `ui/api.py` - a typed client over the M8 routes; SSE parsed with the
+      `id:` field so reattach uses the sequence the server gave, not a count
+- [x] Errors surface the envelope's `code`, never a traceback
+
+### 9.2 Shell
+- [x] Persona picker in the sidebar; switching logs in again rather than
+      mutating a session, because the role is server-resolved
+- [x] Thread list, new chat, delete
+- [x] Session token and thread id mirrored to the URL query params, so a
+      refresh is a reattach rather than a restart
+
+### 9.3 Chat
+- [x] Fact block rendered as a distinct card **above** the prose, matching the
+      order the events arrive in
+- [x] Prose appended from `token.delta`
+- [x] Citations with document, clause ref and tier badge
+- [x] Denial notice on `tool.denied` - stated plainly, per §4.4
+
+### 9.4 Trace panel
+- [x] Live tool calls with arguments, outcome and evidence handle
+- [x] Conflict badge, loud, on `conflict.detected` or an override in
+      `policy.resolved`
+
+### 9.5 The confirmation card
+- [x] Preview, advisories, Confirm and Cancel
+- [x] Confirm posts the token to `/runs/{id}/resume`, then reattaches from the
+      sequence the stream closed on
+- [x] Cancel does the same with `confirm: false`
+
+### 9.6 Resume
+- [x] On mount, `GET /runs/active`; reattach if a run is live or awaiting
+- [x] A refresh mid-run picks the stream back up rather than losing it
+
+### 9.7 Tests
+- [x] Unit tests for the transport and the event reducer, with no browser -
+      the reducer is where the display logic actually lives
+- [x] Playwright end-to-end against a real server and a real browser
+- [x] Full suite green, lint clean
+
+### Playwright, and what it is for
+
+15 browser tests, `-m ui`, deselected by default alongside `live` because they
+need Chromium and two servers. The model is scripted
+(`tests/support/scripted_server.py`); everything else is real - the projection,
+the confirmation token, the event stream, the reattach. A sampled model would
+make "does the fact block render above the prose" intermittent, and a browser
+test that waits ninety seconds for a completion is worse than none.
+
+The division of labour is deliberate. `tests/unit/test_ui_state.py` proves a
+denial survives folding; only a browser proves somebody can see it. So the
+reducer tests carry the logic and the browser tests carry the wiring, and
+neither duplicates the other.
+
+`ui/app.py` reports 0% line coverage because Playwright runs it in a
+subprocess. It is not untested; it is tested by a suite the coverage plugin
+cannot see. Excluding it to tidy the number would have been the dishonest fix.
+
+### Bugs found while building it
+
+- **`policy.resolved` carried a null governing clause.** The tool emits
+  `governing_clause`; the runner read `governing`, got None, and the browser
+  displayed "OVERRIDE None displaces cancellation_and_service_credit_sop_v4::§1".
+  Found by looking at the actual page, not by a test. Fixed in the runner, and
+  the client now refuses to print a missing value as itself - the same rule
+  that keeps a null price from rendering as zero.
+- **A refresh lost the thread.** Signing in and restoring a session were one
+  branch. After a reload `principal` is None, so any "has the persona changed?"
+  test compares against None, decides yes, calls `sign_in`, mints a new session
+  and clears the thread from the URL. Caught by the Playwright refresh test,
+  which is exactly the class of bug the reducer tests cannot reach.
+
+
+---
+
 ## Review
 
 _To be filled in as milestones complete._
