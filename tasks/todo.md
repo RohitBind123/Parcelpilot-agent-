@@ -724,7 +724,7 @@ that a search happened.
 
 ---
 
-## M8 — FastAPI + SSE + confirmation gate
+## M8 — FastAPI + SSE + confirmation gate — complete
 
 **Goal (build order §21):** `curl` the SSE stream; confirm and cancel both work;
 `?from_seq=` replays. Everything the M9 client needs, minus the ops endpoints,
@@ -748,18 +748,18 @@ Sessions, actions and run events are runtime facts. Putting them in
 `build_db.py` run would silently delete them.
 
 ### 8.1 Runtime store
-- [ ] `src/datastore/runtime.py` — schema created on open, not migrated
-- [ ] `sessions(token_id, persona_id, created_at, expires_at)`
-- [ ] `actions(action_id, kind, payload_json, evidence_chain_json, principal,
+- [x] `src/datastore/runtime.py` — schema created on open, not migrated
+- [x] `sessions(token_id, persona_id, created_at, expires_at)`
+- [x] `actions(action_id, kind, payload_json, evidence_chain_json, principal,
       thread_id, created_at)` — append-only, no UPDATE or DELETE path
-- [ ] `run_events(run_id, seq, event, payload_json, ts)` — `seq` monotonic per
+- [x] `run_events(run_id, seq, event, payload_json, ts)` — `seq` monotonic per
       run, UNIQUE(run_id, seq), written before the event is streamed
 
 ### 8.2 Session tokens (D17)
-- [ ] RED: a token forged with the wrong secret is rejected
-- [ ] RED: no request body field can set role or account_id
-- [ ] RED: an expired token is rejected
-- [ ] `src/auth/sessions.py` — opaque signed token, server-side token → Principal
+- [x] RED: a token forged with the wrong secret is rejected
+- [x] RED: no request body field can set role or account_id
+- [x] RED: an expired token is rejected
+- [x] `src/auth/sessions.py` — opaque signed token, server-side token → Principal
 - [x] ~~`session_secret` required at startup; refuse to boot on the empty
       default~~ — `.env.example` already settles this and settles it better:
       unset means a random secret per process, so sessions do not survive a
@@ -767,49 +767,102 @@ Sessions, actions and run events are runtime facts. Putting them in
       buy nothing and cost the demo a step.
 
 ### 8.3 Action tokens and the immutable log
-- [ ] RED: a token whose payload changed fails verification
-- [ ] RED: a token replayed a second time is refused (single use)
-- [ ] RED: a token past its expiry is refused
-- [ ] RED: a token minted in one session is refused in another
-- [ ] `src/domain/actions.py` — `ActionKind`, HMAC over
+- [x] RED: a token whose payload changed fails verification
+- [x] RED: a token replayed a second time is refused (single use)
+- [x] RED: a token past its expiry is refused
+- [x] RED: a token minted in one session is refused in another
+- [x] `src/domain/actions.py` — `ActionKind`, HMAC over
       `payload ‖ session_id ‖ nonce`, `mint` / `verify`
-- [ ] Executed actions append with their full evidence chain
+- [x] Executed actions append with their full evidence chain
 
 ### 8.4 The three gate tools
-- [ ] `prepare_action(kind, payload, evidence_ids)` — refuses when
+- [x] `prepare_action(kind, payload, evidence_ids)` — refuses when
       `check_data_consistency` reports a **blocking** conflict (D19); returns
       `{preview, token}`
-- [ ] `execute_action(token)` — recomputes the HMAC; refuses on mismatch,
+- [x] `execute_action(token)` — recomputes the HMAC; refuses on mismatch,
       reuse, expiry
-- [ ] `approve_credit` — manager-only (already reserved `_MANAGER` in
+- [x] `approve_credit` — manager-only (already reserved `_MANAGER` in
       `PROJECTION`), > INR 1,000 per SOP v4 §3, unit-tested against a synthetic
       fixture because shipped credits cap at INR 500. The fixture is a test
       fixture, not data augmentation; the shipped dataset stays untouched.
-- [ ] `UNIMPLEMENTED` loses all three rows; `test_tool_projection` already
+- [x] `UNIMPLEMENTED` loses all three rows; `test_tool_projection` already
       fails if any lands with the wrong scope
 
 ### 8.5 The interrupt
-- [ ] RED: the pending payload is in graph state and **not** in any message the
+- [x] RED: the pending payload is in graph state and **not** in any message the
       model can see — the integrity property, not a UX convention
-- [ ] RED: resuming with `confirm: false` executes nothing and appends nothing
-- [ ] `interrupt()` inside the graph; resume by `Command(resume=...)`
+- [x] RED: resuming with `confirm: false` executes nothing and appends nothing
+- [x] `interrupt()` inside the graph; resume by `Command(resume=...)`
 
 ### 8.6 FastAPI + SSE
-- [ ] `POST /auth/login|logout`, `GET /auth/me`
-- [ ] `GET|POST /threads`, `DELETE /threads/{id}`, `GET|POST /threads/{id}/messages`
-- [ ] `GET /runs/active` (resume flow), `GET /runs/{id}/events` (SSE,
+- [x] `POST /auth/login|logout`, `GET /auth/me`
+- [x] `GET|POST /threads`, `DELETE /threads/{id}`, `GET|POST /threads/{id}/messages`
+- [x] `GET /runs/active` (resume flow), `GET /runs/{id}/events` (SSE,
       `?from_seq=N`), `POST /runs/{id}/resume`
-- [ ] `GET /healthz` — `{status, as_of, providers, index_identity}`
-- [ ] Every event persisted with its `seq` **before** streaming, which is the
+- [x] `GET /healthz` — `{status, as_of, providers, index_identity}`
+- [x] Every event persisted with its `seq` **before** streaming, which is the
       whole reason `?from_seq=` can reattach
-- [ ] `facts.block` emitted whole, before the first `token.delta`
-- [ ] Response envelope and error shape (the open Day-1 checklist item)
-- [ ] Denials emit `tool.denied` and are logged with the attempted query
+- [x] `facts.block` emitted whole, before the first `token.delta`
+- [x] Response envelope and error shape (the open Day-1 checklist item)
+- [x] Denials emit `tool.denied` and are logged with the attempted query
 
 ### 8.7 End to end
-- [ ] Grow `tests/integration/test_end_to_end.py` through the HTTP layer
-- [ ] `curl` transcript in the milestone notes: stream, confirm, cancel, replay
-- [ ] Full suite green, lint clean, coverage gate held
+- [x] Grow `tests/integration/test_end_to_end.py` through the HTTP layer
+- [x] `curl` transcript in the milestone notes: stream, confirm, cancel, replay
+- [x] Full suite green, lint clean, coverage gate held
+
+### Verified against a running server, not only in tests
+
+`uvicorn src.api.main:app`, then curl. Two runs, both driven by Gemini:
+
+- **TKT-503 billing contact** (ARCHITECTURE 13 calls this the live demo): 28
+  events, and the answer declines. `check_data_consistency` reports
+  `missing_source` as **blocking** - "no citable clause covers
+  'account_contact' for this account" - and the agent says so instead of
+  inventing a procedure.
+- **Cancelling ORD-1001**: `facts.block` at seq 24, first `token.delta` at
+  seq 26, so the block really does arrive whole and first. `grounding.checked`
+  reported 9 claims with one unsupported - the model asserted a pickup "may
+  have already" happened - and the gate dropped the prose and escalated.
+  `prepare_action` was refused twice by D19 on ORD-1001's blocking
+  `stale_status` conflict, which is the gate doing exactly its job on real
+  rows.
+- **Replay**: 34 events from seq 0, 14 from seq 20. `/runs/active` is null
+  once the run completes.
+
+Confirm and cancel are covered by the 29 tests in `tests/integration/test_api.py`
+rather than live, because every live question that reaches `prepare_action` on
+this dataset trips the ORD-1001 conflict first - which is the correct behaviour
+and makes it a poor path for demonstrating the happy case.
+
+### Bugs found while building it
+
+- **`MODEL_INVISIBLE` was enforced in the wrong place.** `build_graph` built its
+  schema list with its own comprehension instead of calling `to_schemas`, so
+  `execute_action` was in the schema after all. Found by a test, not by reading.
+- **FastAPI dependencies defined inside the factory.** With
+  `from __future__ import annotations` every annotation is a string, and FastAPI
+  resolves those against module globals - so an `Annotated[...]` alias local to
+  `create_app` was invisible and the dependency was silently reinterpreted as a
+  query parameter. The symptom is a 422 naming a field nobody declared.
+- **The SSE stream hung when a client stopped reading early.** `ASGITransport`
+  never sends the `http.disconnect` that sse-starlette waits for. The fix was a
+  design correction rather than a workaround: a run parked on a confirmation is
+  waiting on human think-time, so the stream now closes at
+  `interrupt.await_confirm` and the client reattaches with `?from_seq=` after
+  answering. That makes reattachment the normal path instead of an error path
+  nobody exercises.
+- **The server ran without a retriever or an extractor.** `AgentService.build`
+  left both defaulting to None, so `search_policy` reported itself unavailable
+  and `Agent.ask` returned an ungraded answer - the gate silently did not run.
+  A server that answers without its gate looks like the product and is not it.
+- **Two test-harness bugs that would have hidden real behaviour.** The action
+  token fixture recomputed `expires_at` per call, so every tamper test would
+  have passed whether or not the field it names was signed; confirmed
+  non-vacuous afterwards by dropping each field from the signing material in
+  turn. And the API's scripted provider copied its script, so on resume the
+  model reproposed the same action and the run interrupted again instead of
+  finishing.
 
 
 ---

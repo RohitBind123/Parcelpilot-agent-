@@ -131,6 +131,10 @@ def open_agent(
     extractor: Any | None = None,
     run_id: str = "run",
     max_tool_turns: int = MAX_TOOL_TURNS,
+    runtime: Any | None = None,
+    session_id: str = "session",
+    thread_id: str = "default",
+    action_secret: str | None = None,
 ) -> Iterator[Agent]:
     from src.agent.tools.registry import build_toolset
 
@@ -145,6 +149,10 @@ def open_agent(
         db_path=db_path,
         retriever=retriever,
         severity_classifier=severity_classifier,
+        runtime=runtime,
+        session_id=session_id,
+        thread_id=thread_id,
+        action_secret=action_secret,
     ) as tool_context:
         tools = build_toolset(tool_context)
         graph = build_graph(tools, provider, checkpointer=saver, max_tool_turns=max_tool_turns)

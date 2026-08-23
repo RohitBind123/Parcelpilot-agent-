@@ -46,6 +46,11 @@ testpaths = ["tests"]
 # and fails outright on a machine with no API keys. An explicit `-m live`
 # on the command line overrides it.
 addopts = "-q --strict-markers --strict-config -m 'not live'"
+# Async tests and async fixtures without a marker on each one. The API tests
+# are all async, and in strict mode an unmarked async *fixture* is not an
+# error - it is silently handed to a sync test, which is worse.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "live: hits a real provider or Chroma Cloud; deselected by default (-m 'not live')",
     "eval: golden-set or RAGAS run; slow and LLM-judged",

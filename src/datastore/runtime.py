@@ -34,7 +34,7 @@ import logging
 import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -114,6 +114,26 @@ BEGIN
     SELECT RAISE(ABORT, 'actions is append-only');
 END;
 
+CREATE TABLE IF NOT EXISTS threads (
+    thread_id   TEXT PRIMARY KEY,
+    persona_id  TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS runs (
+    run_id     TEXT PRIMARY KEY,
+    thread_id  TEXT NOT NULL,
+    persona_id TEXT NOT NULL,
+    status     TEXT NOT NULL,
+    question   TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_runs_persona ON runs (persona_id, updated_at);
+
 CREATE TABLE IF NOT EXISTS run_events (
     run_id       TEXT NOT NULL,
     seq          INTEGER NOT NULL,
@@ -159,6 +179,43 @@ class ActionRecord:
             "evidence_chain": list(self.evidence_chain),
             "thread_id": self.thread_id,
             "occurred_at": self.occurred_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Thread:
+    thread_id: str
+    persona_id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "thread_id": self.thread_id,
+            "title": self.title,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RunRecord:
+    run_id: str
+    thread_id: str
+    persona_id: str
+    status: str
+    question: str
+    created_at: datetime
+    updated_at: datetime
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "thread_id": self.thread_id,
+            "status": self.status,
+            "question": self.question,
+            "updated_at": self.updated_at.isoformat(),
         }
 
 
@@ -329,6 +386,104 @@ class RuntimeStore:
         ).fetchall()
         return tuple(_to_action(row) for row in rows)
 
+    # -- threads and runs ---------------------------------------------------
+
+    def upsert_thread(self, *, thread_id: str, persona_id: str, title: str) -> Thread:
+        """Create a thread, or touch an existing one.
+
+        The title is set once and then left alone: it comes from the opening
+        question, and rewriting it on every message would make the sidebar
+        rename itself as a conversation goes on.
+        """
+        now = wall_now()
+        existing = self.get_thread(thread_id)
+        if existing is None:
+            record = Thread(
+                thread_id=thread_id,
+                persona_id=persona_id,
+                title=title,
+                created_at=now,
+                updated_at=now,
+            )
+            self.connection.execute(
+                "INSERT INTO threads (thread_id, persona_id, title, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (thread_id, persona_id, title, now.isoformat(), now.isoformat()),
+            )
+        else:
+            record = replace(existing, updated_at=now)
+            self.connection.execute(
+                "UPDATE threads SET updated_at = ? WHERE thread_id = ?",
+                (now.isoformat(), thread_id),
+            )
+        self.connection.commit()
+        return record
+
+    def get_thread(self, thread_id: str) -> Thread | None:
+        row = self.connection.execute(
+            "SELECT * FROM threads WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
+        return None if row is None else _to_thread(row)
+
+    def threads_for(self, persona_id: str, limit: int = 50) -> tuple[Thread, ...]:
+        rows = self.connection.execute(
+            "SELECT * FROM threads WHERE persona_id = ? ORDER BY updated_at DESC LIMIT ?",
+            (persona_id, min(limit, 200)),
+        ).fetchall()
+        return tuple(_to_thread(row) for row in rows)
+
+    def delete_thread(self, thread_id: str) -> None:
+        """Forget a conversation. The action log is untouched, deliberately:
+        deleting a chat must not delete the record of what it did."""
+        self.connection.execute("DELETE FROM threads WHERE thread_id = ?", (thread_id,))
+        self.connection.commit()
+
+    def create_run(
+        self, *, run_id: str, thread_id: str, persona_id: str, question: str
+    ) -> RunRecord:
+        now = wall_now()
+        record = RunRecord(
+            run_id=run_id,
+            thread_id=thread_id,
+            persona_id=persona_id,
+            status="running",
+            question=question,
+            created_at=now,
+            updated_at=now,
+        )
+        self.connection.execute(
+            "INSERT INTO runs (run_id, thread_id, persona_id, status, question, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (run_id, thread_id, persona_id, "running", question, now.isoformat(), now.isoformat()),
+        )
+        self.connection.commit()
+        return record
+
+    def set_run_status(self, run_id: str, status: str) -> None:
+        self.connection.execute(
+            "UPDATE runs SET status = ?, updated_at = ? WHERE run_id = ?",
+            (status, wall_now().isoformat(), run_id),
+        )
+        self.connection.commit()
+
+    def get_run(self, run_id: str) -> RunRecord | None:
+        row = self.connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        return None if row is None else _to_run(row)
+
+    def active_run_for(self, persona_id: str) -> RunRecord | None:
+        """The most recent resumable run, for the reattach flow.
+
+        Only `running` and `awaiting_confirmation` qualify. A completed run has
+        nothing to reattach to, and a failed one should not put the client back
+        on a stream that will never move.
+        """
+        row = self.connection.execute(
+            "SELECT * FROM runs WHERE persona_id = ? AND status IN "
+            "('running', 'awaiting_confirmation') ORDER BY updated_at DESC LIMIT 1",
+            (persona_id,),
+        ).fetchone()
+        return None if row is None else _to_run(row)
+
     # -- the run event stream -----------------------------------------------
 
     def append_event(self, *, run_id: str, event: str, payload: Mapping[str, Any]) -> int:
@@ -391,6 +546,28 @@ def _new_id() -> str:
     return secrets.token_hex(8)
 
 
+def _to_thread(row: sqlite3.Row) -> Thread:
+    return Thread(
+        thread_id=row["thread_id"],
+        persona_id=row["persona_id"],
+        title=row["title"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def _to_run(row: sqlite3.Row) -> RunRecord:
+    return RunRecord(
+        run_id=row["run_id"],
+        thread_id=row["thread_id"],
+        persona_id=row["persona_id"],
+        status=row["status"],
+        question=row["question"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
 def _to_action(row: sqlite3.Row) -> ActionRecord:
     return ActionRecord(
         seq=int(row["seq"]),
@@ -412,8 +589,10 @@ __all__ = [
     "ActionRecord",
     "ImmutableLogError",
     "RunEvent",
+    "RunRecord",
     "RuntimeStore",
     "RuntimeStoreError",
     "Session",
+    "Thread",
     "open_runtime_store",
 ]
