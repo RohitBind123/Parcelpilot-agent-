@@ -120,6 +120,38 @@ class PendingAction:
     def is_expired(self) -> bool:
         return self.expires_at <= wall_now()
 
+    def to_state(self) -> dict[str, Any]:
+        """A plain dict for the checkpointer.
+
+        Stored as primitives rather than relying on the serialiser to handle a
+        dataclass: graph state goes through SQLite and has to come back
+        identical, because a payload that changes shape in transit fails its
+        own token check for a reason that has nothing to do with tampering.
+        """
+        return {
+            "nonce": self.nonce,
+            "kind": self.kind.value,
+            "payload": dict(self.payload),
+            "evidence_chain": list(self.evidence_chain),
+            "session_id": self.session_id,
+            "thread_id": self.thread_id,
+            "expires_at": self.expires_at.isoformat(),
+            "advisories": list(self.advisories),
+        }
+
+    @classmethod
+    def from_state(cls, stored: Mapping[str, Any]) -> PendingAction:
+        return cls(
+            nonce=stored["nonce"],
+            kind=ActionKind(stored["kind"]),
+            payload=dict(stored["payload"]),
+            evidence_chain=tuple(stored["evidence_chain"]),
+            session_id=stored["session_id"],
+            thread_id=stored["thread_id"],
+            expires_at=datetime.fromisoformat(stored["expires_at"]),
+            advisories=tuple(stored.get("advisories", ())),
+        )
+
 
 def build_pending(
     *,

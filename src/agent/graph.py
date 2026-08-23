@@ -28,13 +28,16 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, StateGraph
+from langgraph.types import interrupt
 
-from src.agent.tools.base import Tool, ToolError
+from src.agent.tools.base import Tool, ToolError, ToolPending
+from src.agent.tools.registry import MODEL_INVISIBLE, to_schemas
+from src.domain.action_tokens import PendingAction
 from src.providers.base import ChatProvider, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -50,6 +53,16 @@ _STOPPED_EARLY = (
     "Here is what I established before stopping."
 )
 
+_DECLINED = (
+    "the person declined this action, so nothing was done. Do not prepare it again "
+    "unless they ask; tell them it was not carried out."
+)
+
+_NO_PERFORMER = (
+    "the action could not be carried out because this session cannot perform actions; "
+    "nothing was changed"
+)
+
 #: Keys whose value is an evidence handle, collected for the trace.
 _HANDLE_KEYS = ("snapshot_id", "account_snapshot_id", "resolution_id", "report_id", "calc_id")
 
@@ -62,6 +75,17 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[list[dict[str, Any]], _extend]
     turns: int
     stopped_early: bool
+    #: The action awaiting confirmation, as primitives (ARCHITECTURE 13).
+    #:
+    #: Here rather than in the conversation, which is the integrity property
+    #: and not a UX convention: the model cannot edit graph state, so the thing
+    #: that executes is the thing the human was shown. The tool reply for the
+    #: `prepare_action` call is deliberately withheld until the answer comes
+    #: back, so the model reads one coherent outcome instead of "prepared"
+    #: followed later by something contradicting it.
+    pending: dict[str, Any] | None
+    pending_token: str | None
+    pending_call_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +144,10 @@ def build_graph(
     mechanism rather than a convention.
     """
     by_name = {tool.name: tool for tool in tools}
-    schemas = [tool.to_schema() for tool in tools]
+    # Through `to_schemas`, not a comprehension over `tools`: that helper is
+    # what applies `MODEL_INVISIBLE`, and building the list here independently
+    # is how a withheld tool ends up in the schema anyway.
+    schemas = to_schemas(tools)
 
     def model(state: AgentState) -> AgentState:
         completion = provider.complete(state["messages"], tools=schemas, tier="strong")
@@ -130,8 +157,66 @@ def build_graph(
 
     def run_tools(state: AgentState) -> AgentState:
         assistant = state["messages"][-1]
-        replies = [_run_one(by_name, _to_call(raw)) for raw in assistant.get("tool_calls", ())]
-        return {"messages": replies, "turns": state.get("turns", 0) + 1}
+        replies: list[dict[str, Any]] = []
+        parked: AgentState = {}
+        for raw in assistant.get("tool_calls", ()):
+            call = _to_call(raw)
+            outcome = _invoke(by_name, call)
+            if isinstance(outcome, ToolPending) and not parked:
+                # No reply for this call yet. It is answered by the confirm
+                # node once the human has, so the conversation never contains
+                # "prepared" without the outcome that followed it.
+                parked = {
+                    "pending": outcome.pending.to_state(),
+                    "pending_token": outcome.token,
+                    "pending_call_id": call.id,
+                }
+                continue
+            if isinstance(outcome, ToolPending):
+                # A second proposal in one turn. Only one can be confirmed at
+                # a time, and silently dropping it would leave the model
+                # believing both are waiting.
+                outcome = ToolError(
+                    "only one action can await confirmation at a time; "
+                    "propose this one again after the first is answered"
+                )
+            replies.append(_reply(call, outcome))
+        return {"messages": replies, "turns": state.get("turns", 0) + 1, **parked}
+
+    def confirm(state: AgentState) -> AgentState:
+        """Pause for a human, then perform or cancel.
+
+        Nothing happens before `interrupt()`, and that is load-bearing rather
+        than tidy: LangGraph re-executes the interrupting node from its start
+        when the run resumes, so any side effect above this line would happen
+        twice. It is why this is a node of its own instead of a pause inside
+        `run_tools`.
+        """
+        stored = state.get("pending") or {}
+        answer = interrupt(
+            {
+                "preview": PendingAction.from_state(stored).to_preview(),
+                "token": state.get("pending_token"),
+            }
+        )
+
+        call = ToolCall(id=state.get("pending_call_id") or "", name="prepare_action", arguments={})
+        cleared: AgentState = {"pending": None, "pending_token": None, "pending_call_id": None}
+
+        confirmed, token = _read_answer(answer)
+        if not confirmed:
+            return {"messages": [_reply(call, ToolError(_DECLINED, recoverable=False))], **cleared}
+
+        performer = by_name.get("execute_action")
+        if performer is None:
+            logger.error("a confirmation arrived but no execute_action tool is bound")
+            return {
+                "messages": [_reply(call, ToolError(_NO_PERFORMER, recoverable=False))],
+                **cleared,
+            }
+
+        outcome = performer(token=token, pending=PendingAction.from_state(stored))
+        return {"messages": [_reply(call, outcome)], **cleared}
 
     def route(state: AgentState) -> str:
         assistant = state["messages"][-1]
@@ -147,17 +232,36 @@ def build_graph(
     def exhausted(_state: AgentState) -> AgentState:
         return {"stopped_early": True}
 
+    def after_tools(state: AgentState) -> str:
+        return "confirm" if state.get("pending") else "model"
+
     graph = StateGraph(AgentState)
     graph.add_node("model", model)
     graph.add_node("tools", run_tools)
+    graph.add_node("confirm", confirm)
     graph.add_node("exhausted", exhausted)
     graph.set_entry_point("model")
     graph.add_conditional_edges(
         "model", route, {"tools": "tools", "exhausted": "exhausted", END: END}
     )
-    graph.add_edge("tools", "model")
+    graph.add_conditional_edges("tools", after_tools, {"confirm": "confirm", "model": "model"})
+    graph.add_edge("confirm", "model")
     graph.add_edge("exhausted", END)
     return graph.compile(checkpointer=checkpointer)
+
+
+def _read_answer(answer: Any) -> tuple[bool, str]:
+    """What the client sent back on resume.
+
+    A bare `True` is accepted as confirmation for the CLI and for tests; the
+    API always sends the mapping. Anything unrecognised is a decline, because
+    the failure that matters here is performing something nobody agreed to.
+    """
+    if answer is True:
+        return True, ""
+    if isinstance(answer, Mapping):
+        return bool(answer.get("confirm")), str(answer.get("token") or "")
+    return False, ""
 
 
 def _to_call(raw: Any) -> ToolCall:
@@ -174,22 +278,30 @@ def _to_call(raw: Any) -> ToolCall:
     return ToolCall(id=raw.get("id", ""), name=function.get("name", ""), arguments=arguments)
 
 
-def _run_one(by_name: dict[str, Tool], call: ToolCall) -> dict[str, Any]:
-    """Execute one call and shape its reply for the next request.
+def _invoke(by_name: dict[str, Tool], call: ToolCall) -> Any:
+    """Execute one call.
 
     A tool the model invented is answered rather than raised. It has already
     happened by the time we see it, and the only useful response is to say the
     name is not available and let the model choose again.
+
+    A tool withheld from the schema is answered the same way. `execute_action`
+    is bound but nameless to the model (`MODEL_INVISIBLE`), and a model that
+    guesses the name should be told it is unavailable, not handed it.
     """
+    if call.name in MODEL_INVISIBLE:
+        return ToolError(f"no tool named {call.name!r} is available in this session")
     tool = by_name.get(call.name)
     if tool is None:
-        outcome: Any = ToolError(
+        return ToolError(
             f"no tool named {call.name!r} is available in this session; "
-            f"available: {sorted(by_name)}"
+            f"available: {sorted(n for n in by_name if n not in MODEL_INVISIBLE)}"
         )
-    else:
-        outcome = tool(**dict(call.arguments))
+    return tool(**dict(call.arguments))
 
+
+def _reply(call: ToolCall, outcome: Any) -> dict[str, Any]:
+    """Shape one outcome as the tool message the next request carries."""
     return {
         "role": "tool",
         "tool_call_id": call.id,
