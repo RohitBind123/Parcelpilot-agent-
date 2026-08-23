@@ -21,7 +21,7 @@ from src.auth.personas import get_persona, to_principal
 from src.config import get_settings
 from src.knowledge.registry import load_chunks
 from src.knowledge.retriever import BM25Index, HybridRetriever
-from src.knowledge.vectorstore.chroma import ChromaCloudStore
+from src.knowledge.vectorstore.chroma import ChromaCloudStore, VectorStoreError
 from src.providers.registry import get_embedding_provider
 
 pytestmark = pytest.mark.live
@@ -51,6 +51,75 @@ def cloud():
     chunks = load_chunks(settings.db_path)
     store.upsert(chunks)
     return {"store": store, "chunks": chunks, "embeddings": embeddings}
+
+
+class _UnusedEmbeddings:
+    """An embedding identity nothing has ever been indexed under.
+
+    Both methods raise: an absent collection has to be discovered before any
+    text is embedded, and this fixture must never write to the real tenant.
+    """
+
+    identity = "nobody/never-indexed-model/999"
+
+    def embed_query(self, text):
+        raise AssertionError("an absent collection must be found before embedding")
+
+    def embed_documents(self, texts):
+        raise AssertionError("this fixture must never write")
+
+
+@pytest.fixture(scope="module")
+def never_indexed():
+    settings = get_settings()
+    if not (settings.chroma_api_key and settings.chroma_tenant):
+        pytest.skip("CHROMA_API_KEY / CHROMA_TENANT not configured")
+    return ChromaCloudStore(
+        embeddings=_UnusedEmbeddings(),
+        api_key=settings.chroma_api_key,
+        tenant=settings.chroma_tenant,
+        database=settings.chroma_database,
+    )
+
+
+class TestTheHostedAbsentCollectionContract:
+    """That the Cloud client reports a missing collection as `NotFoundError`.
+
+    `_find_collection` turns exactly one exception into "not built", and every
+    other exception is allowed to propagate as a real fault. That split is only
+    as good as the error type, and on the hosted client the type is not a
+    language-level guarantee: `BaseHTTPClient._raise_chroma_error` promotes an
+    HTTP failure to a typed error only when the response body is JSON shaped
+    like `{"error": "NotFoundError", ...}`, which is the OSS reference server's
+    envelope. A gateway 404, a proxy error page, or a control plane that words
+    its JSON differently all fall through to a bare `Exception`.
+
+    Measured against the real tenant, Cloud does raise `NotFoundError` today.
+    This test is here so that stays a fact rather than something I remember
+    checking once. **If it starts failing, `_find_collection` is silently
+    letting a missing collection propagate as a fault** - `count()` would raise
+    where it promises not to, and `query()` would lose the specific
+    `VectorStoreError` in favour of whatever the transport threw.
+
+    No collection is created: `get_collection` is a read, and the identity is
+    one that has never been indexed.
+    """
+
+    def test_the_hosted_client_raises_the_typed_not_found_error(self, never_indexed):
+        from chromadb.errors import NotFoundError
+
+        with pytest.raises(NotFoundError):
+            never_indexed._client.get_collection(name=never_indexed.collection_name)
+
+    def test_count_is_zero_rather_than_raising(self, never_indexed):
+        # The contract `count()` advertises, exercised against the transport
+        # that could break it.
+        assert never_indexed.count() == 0
+
+    def test_query_raises_the_specific_error_and_names_the_identity(self, never_indexed):
+        with pytest.raises(VectorStoreError) as caught:
+            never_indexed.query("cancellation fee", principal=persona("maya_agent"))
+        assert never_indexed.collection_name in str(caught.value)
 
 
 class TestHostedStore:

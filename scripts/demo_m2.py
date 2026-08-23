@@ -72,7 +72,17 @@ def main() -> int:
     else:
         embeddings = get_embedding_provider(settings)
         store = build_vector_store(settings, embeddings)
-        if store.count() == 0:
+        # `count()` promises not to raise for a collection that was never
+        # built, but that promise rests on the hosted client reporting absence
+        # as NotFoundError - a transport detail, not a language guarantee (see
+        # TestTheHostedAbsentCollectionContract). A demo script should print
+        # the next command to run, not a traceback, if that ever changes.
+        try:
+            held = store.count()
+        except Exception as exc:
+            print(f"cannot reach {store.collection_name} ({type(exc).__name__}: {exc})")
+            return 1
+        if held == 0:
             print(f"{store.collection_name} is empty; run scripts/build_index.py first")
             return 1
 

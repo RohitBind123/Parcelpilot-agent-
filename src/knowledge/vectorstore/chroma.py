@@ -52,9 +52,19 @@ class ChromaStore:
         self.collection_name = collection_name_for(embeddings.identity)
 
     # -- collection ---------------------------------------------------------
+    #
+    # Reading and writing reach the collection by different routes on purpose.
+    # `get_or_create_collection` on the read path is the bug this split exists
+    # to prevent: query the store under an embedding identity that was never
+    # indexed and Chroma obligingly creates an empty collection, `query`
+    # returns no rows, and the caller cannot tell "the corpus does not answer
+    # this" from "the index for this identity does not exist". Downstream that
+    # becomes "no citable source" and an escalation for the wrong reason - and
+    # since `data/index/` is a committed artifact, the empty collection is
+    # written into it on the way past.
 
     @property
-    def _collection(self) -> Any:
+    def _write_collection(self) -> Any:
         # Fetched per use rather than cached: `upsert` deletes and recreates,
         # and a cached handle to a deleted collection fails obscurely.
         return self._client.get_or_create_collection(
@@ -62,8 +72,32 @@ class ChromaStore:
             metadata={"embedding_identity": self.identity},
         )
 
+    def _find_collection(self) -> Any | None:
+        """The collection for this identity, or None if it was never built.
+
+        Only absence is turned into None. An unreachable host or a broken
+        client raises, because degrading those to "not built" would report a
+        network fault as a missing index and send the next person to the wrong
+        place; `HybridRetriever._safe_dense` already logs and falls back to
+        lexical for exactly that case.
+        """
+        from chromadb.errors import NotFoundError
+
+        try:
+            return self._client.get_collection(name=self.collection_name)
+        except NotFoundError:
+            return None
+
     def count(self) -> int:
-        return int(self._collection.count())
+        """How many vectors are searchable under this identity.
+
+        Zero when the collection does not exist, rather than raising: this
+        answers "is there an index", which the build scripts ask before they
+        do anything, and zero is a truthful answer to it. `query` takes the
+        stricter line, because there the distinction changes the answer.
+        """
+        collection = self._find_collection()
+        return 0 if collection is None else int(collection.count())
 
     # -- writing ------------------------------------------------------------
 
@@ -89,7 +123,7 @@ class ChromaStore:
                 f"embedding returned {len(vectors)} vectors for {len(chunks)} chunks"
             )
 
-        self._collection.add(
+        self._write_collection.add(
             ids=[chunk.clause_id for chunk in chunks],
             embeddings=vectors,
             documents=[chunk.text for chunk in chunks],
@@ -115,14 +149,32 @@ class ChromaStore:
         here from the Principal, so an unauthorised read is unavailable rather
         than merely discouraged.
         """
-        if self.count() == 0:
+        collection = self._find_collection()
+        if collection is None:
+            raise VectorStoreError(
+                f"no collection {self.collection_name!r} for embedding identity "
+                f"{self.identity!r}; the index has not been built for this provider"
+            )
+
+        # Counted once and reused. Each fetch is a round-trip on the hosted
+        # client, and a count that changes between the guard and the call
+        # would make `n_results` disagree with what is there.
+        available = int(collection.count())
+        if available == 0:
+            # Reachable only through a write that created the collection and
+            # then failed before adding to it, since `upsert` refuses an empty
+            # corpus and reads no longer create. Silence here would look
+            # exactly like a corpus with nothing to say.
+            logger.warning(
+                "collection %s exists but holds no vectors; the index may be half-written",
+                self.collection_name,
+            )
             return []
 
-        where = _acl_predicate(principal, tiers, topics)
-        result = self._collection.query(
+        result = collection.query(
             query_embeddings=[self._embeddings.embed_query(text)],
-            n_results=min(k, self.count()),
-            where=where,
+            n_results=min(k, available),
+            where=_acl_predicate(principal, tiers, topics),
             include=["metadatas", "documents", "distances"],
         )
         return _to_chunks(result)

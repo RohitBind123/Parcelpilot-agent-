@@ -52,3 +52,7 @@ project_docs/*.docx
 
 # Derived cache, never committed (see src/providers/cache.py)
 data/embedding_cache.db*
+
+# LangGraph checkpointer: runtime conversation state, written by every run
+# (see src/agent/context.py DEFAULT_CHECKPOINT_PATH). Never committed.
+data/threads.db*

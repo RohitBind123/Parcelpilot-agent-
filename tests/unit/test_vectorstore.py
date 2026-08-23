@@ -11,13 +11,15 @@ of them inspect the signature rather than the results.
 from __future__ import annotations
 
 import inspect
+import logging
+from pathlib import Path
 
 import pytest
 
 from src.auth.personas import get_persona, to_principal
 from src.auth.principal import Principal, build_principal
 from src.knowledge.vectorstore.base import GLOBAL_SCOPE, Chunk, VectorStore
-from src.knowledge.vectorstore.chroma import ChromaLocalStore
+from src.knowledge.vectorstore.chroma import ChromaLocalStore, VectorStoreError
 from tests.support.embeddings import HashingEmbeddings
 
 
@@ -88,6 +90,25 @@ def store(tmp_path):
 
 def ids(chunks) -> set[str]:
     return {c.clause_id for c in chunks}
+
+
+def collections_on_disk(persist_dir) -> set[str]:
+    """Collection names as the Chroma file holds them.
+
+    Read with sqlite rather than a Chroma client because constructing a client
+    is itself a write, and what these tests are about is what the file ends up
+    containing.
+    """
+    import sqlite3
+
+    database = Path(persist_dir) / "chroma.sqlite3"
+    if not database.exists():
+        return set()
+    connection = sqlite3.connect(database)
+    try:
+        return {row[0] for row in connection.execute("SELECT name FROM collections")}
+    finally:
+        connection.close()
 
 
 class TestTheStoreOwnsAccessControl:
@@ -162,7 +183,7 @@ class TestCollectionIdentity:
         )
         assert first.collection_name != second.collection_name
 
-    def test_switching_identity_selects_an_empty_collection_not_stale_vectors(self, tmp_path):
+    def test_switching_identity_never_returns_the_other_models_vectors(self, tmp_path):
         first = ChromaLocalStore(
             embeddings=HashingEmbeddings(tag="model-a"), persist_dir=tmp_path / "index"
         )
@@ -174,6 +195,12 @@ class TestCollectionIdentity:
         # two different spaces and return confident nonsense.
         assert first.count() == len(CORPUS)
         assert second.count() == 0
+        # This assertion used to stop at count() == 0, which is true and which
+        # quietly blessed the way that zero was produced: the read path called
+        # get_or_create_collection, so asking model-b a question *built* an
+        # empty model-b collection and answered out of it. Switching identity
+        # has to be distinguishable from an index that happens to be empty.
+        assert collections_on_disk(tmp_path / "index") == {first.collection_name}
 
     def test_a_dimension_change_alone_changes_the_collection(self, tmp_path):
         narrow = ChromaLocalStore(
@@ -183,6 +210,84 @@ class TestCollectionIdentity:
             embeddings=HashingEmbeddings(dimensions=128), persist_dir=tmp_path / "index"
         )
         assert narrow.collection_name != wide.collection_name
+
+
+class TestAnUnindexedIdentityIsNotAnEmptyIndex:
+    """Reading must not create, and must not report absence as emptiness.
+
+    `query()` returning `[]` for a collection that was never built is the
+    shape of bug this whole codebase is written against: infrastructure
+    absence dressed up as a data answer. Downstream it becomes "no citable
+    source", which escalates for a reason that is not the real one.
+
+    `count()` is different and deliberately does not raise. It answers "how
+    many vectors can I search", and zero is a truthful answer to that; the
+    build scripts use it as an is-it-built check and read better for it.
+    """
+
+    def test_querying_an_identity_that_was_never_indexed_raises(self, tmp_path):
+        built = ChromaLocalStore(
+            embeddings=HashingEmbeddings(tag="model-a"), persist_dir=tmp_path / "index"
+        )
+        built.upsert(CORPUS)
+        other = ChromaLocalStore(
+            embeddings=HashingEmbeddings(tag="model-b"), persist_dir=tmp_path / "index"
+        )
+        with pytest.raises(VectorStoreError) as caught:
+            other.query("cancellation fee", principal=persona("maya_agent"))
+        # The message has to name what is missing. "No results" sends someone
+        # looking at the corpus; the corpus is fine and the index is not built.
+        assert other.collection_name in str(caught.value)
+
+    def test_a_failed_read_leaves_the_index_exactly_as_it_found_it(self, tmp_path):
+        built = ChromaLocalStore(
+            embeddings=HashingEmbeddings(tag="model-a"), persist_dir=tmp_path / "index"
+        )
+        built.upsert(CORPUS)
+        before = collections_on_disk(tmp_path / "index")
+
+        other = ChromaLocalStore(
+            embeddings=HashingEmbeddings(tag="model-b"), persist_dir=tmp_path / "index"
+        )
+        with pytest.raises(VectorStoreError):
+            other.query("cancellation fee", principal=persona("maya_agent"))
+
+        # The index is a committed artifact. A read that writes to it makes
+        # every real change invisible in review.
+        assert collections_on_disk(tmp_path / "index") == before
+
+    def test_counting_an_unindexed_identity_is_zero_and_creates_nothing(self, tmp_path):
+        store = ChromaLocalStore(
+            embeddings=HashingEmbeddings(tag="never-built"), persist_dir=tmp_path / "index"
+        )
+        assert store.count() == 0
+        assert collections_on_disk(tmp_path / "index") == set()
+
+    def test_a_collection_that_exists_but_is_empty_returns_no_rows(self, tmp_path, caplog):
+        """The counterpart to absence, and the reason the two are separated.
+
+        An empty collection has been searched and had nothing to say, so `[]`
+        is the honest answer. A missing one has not been searched at all.
+        Only `upsert` can leave a collection behind now, and it refuses an
+        empty corpus, so reaching this state means something is wrong - but
+        crashing on `n_results=0` would be a worse way to find out.
+        """
+        store = ChromaLocalStore(embeddings=HashingEmbeddings(), persist_dir=tmp_path / "index")
+        store._client.get_or_create_collection(name=store.collection_name)
+
+        with caplog.at_level(logging.WARNING, logger="src.knowledge.vectorstore.chroma"):
+            assert store.query("cancellation fee", principal=persona("maya_agent")) == []
+        # Returning [] is right and saying nothing is not: this state is only
+        # reachable through a half-written index, and it is indistinguishable
+        # from a corpus with no answer unless someone says so.
+        assert "holds no vectors" in caplog.text
+
+    def test_an_empty_corpus_is_still_refused_by_upsert(self, tmp_path):
+        # The only way an existing-but-empty collection could arise once the
+        # read path stops creating them.
+        store = ChromaLocalStore(embeddings=HashingEmbeddings(), persist_dir=tmp_path / "index")
+        with pytest.raises(VectorStoreError):
+            store.upsert(())
 
 
 class TestIndexing:
