@@ -724,6 +724,93 @@ that a search happened.
 
 ---
 
+## M8 — FastAPI + SSE + confirmation gate
+
+**Goal (build order §21):** `curl` the SSE stream; confirm and cancel both work;
+`?from_seq=` replays. Everything the M9 client needs, minus the ops endpoints,
+which are M10.
+
+**Ground truth:** ARCHITECTURE §13 (gate), §16 (contract and event schema),
+§4.2 (session tokens, D17). TDD throughout.
+
+### Where runtime state lives — decided before writing any of it
+
+Three SQLite files, and the split is not arbitrary:
+
+| File | Owner | Lifecycle |
+|---|---|---|
+| `data/parcelpilot.db` | `scripts/build_db.py` | committed, read-only at runtime, rebuilt not migrated |
+| `data/threads.db` | LangGraph `SqliteSaver` | runtime, gitignored |
+| `data/runtime.db` | this milestone | runtime, gitignored |
+
+Sessions, actions and run events are runtime facts. Putting them in
+`parcelpilot.db` would make the committed artifact mutable and the next
+`build_db.py` run would silently delete them.
+
+### 8.1 Runtime store
+- [ ] `src/datastore/runtime.py` — schema created on open, not migrated
+- [ ] `sessions(token_id, persona_id, created_at, expires_at)`
+- [ ] `actions(action_id, kind, payload_json, evidence_chain_json, principal,
+      thread_id, created_at)` — append-only, no UPDATE or DELETE path
+- [ ] `run_events(run_id, seq, event, payload_json, ts)` — `seq` monotonic per
+      run, UNIQUE(run_id, seq), written before the event is streamed
+
+### 8.2 Session tokens (D17)
+- [ ] RED: a token forged with the wrong secret is rejected
+- [ ] RED: no request body field can set role or account_id
+- [ ] RED: an expired token is rejected
+- [ ] `src/auth/sessions.py` — opaque signed token, server-side token → Principal
+- [ ] `session_secret` required at startup when the API runs; refuse to boot
+      on the empty default rather than signing with `""`
+
+### 8.3 Action tokens and the immutable log
+- [ ] RED: a token whose payload changed fails verification
+- [ ] RED: a token replayed a second time is refused (single use)
+- [ ] RED: a token past its expiry is refused
+- [ ] RED: a token minted in one session is refused in another
+- [ ] `src/domain/actions.py` — `ActionKind`, HMAC over
+      `payload ‖ session_id ‖ nonce`, `mint` / `verify`
+- [ ] Executed actions append with their full evidence chain
+
+### 8.4 The three gate tools
+- [ ] `prepare_action(kind, payload, evidence_ids)` — refuses when
+      `check_data_consistency` reports a **blocking** conflict (D19); returns
+      `{preview, token}`
+- [ ] `execute_action(token)` — recomputes the HMAC; refuses on mismatch,
+      reuse, expiry
+- [ ] `approve_credit` — manager-only (already reserved `_MANAGER` in
+      `PROJECTION`), > INR 1,000 per SOP v4 §3, unit-tested against a synthetic
+      fixture because shipped credits cap at INR 500. The fixture is a test
+      fixture, not data augmentation; the shipped dataset stays untouched.
+- [ ] `UNIMPLEMENTED` loses all three rows; `test_tool_projection` already
+      fails if any lands with the wrong scope
+
+### 8.5 The interrupt
+- [ ] RED: the pending payload is in graph state and **not** in any message the
+      model can see — the integrity property, not a UX convention
+- [ ] RED: resuming with `confirm: false` executes nothing and appends nothing
+- [ ] `interrupt()` inside the graph; resume by `Command(resume=...)`
+
+### 8.6 FastAPI + SSE
+- [ ] `POST /auth/login|logout`, `GET /auth/me`
+- [ ] `GET|POST /threads`, `DELETE /threads/{id}`, `GET|POST /threads/{id}/messages`
+- [ ] `GET /runs/active` (resume flow), `GET /runs/{id}/events` (SSE,
+      `?from_seq=N`), `POST /runs/{id}/resume`
+- [ ] `GET /healthz` — `{status, as_of, providers, index_identity}`
+- [ ] Every event persisted with its `seq` **before** streaming, which is the
+      whole reason `?from_seq=` can reattach
+- [ ] `facts.block` emitted whole, before the first `token.delta`
+- [ ] Response envelope and error shape (the open Day-1 checklist item)
+- [ ] Denials emit `tool.denied` and are logged with the attempted query
+
+### 8.7 End to end
+- [ ] Grow `tests/integration/test_end_to_end.py` through the HTTP layer
+- [ ] `curl` transcript in the milestone notes: stream, confirm, cancel, replay
+- [ ] Full suite green, lint clean, coverage gate held
+
+
+---
+
 ## Review
 
 _To be filled in as milestones complete._
