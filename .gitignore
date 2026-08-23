@@ -60,3 +60,6 @@ data/threads.db*
 # Runtime state: sessions, the action log, run events
 # (see src/datastore/runtime.py). Never committed.
 data/runtime.db*
+
+# Evidence handles, scoped per conversation (see src/api/service.py).
+data/evidence.db*

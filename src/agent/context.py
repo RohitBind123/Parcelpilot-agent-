@@ -135,6 +135,7 @@ def open_agent(
     session_id: str = "session",
     thread_id: str = "default",
     action_secret: str | None = None,
+    evidence_connection: Any | None = None,
 ) -> Iterator[Agent]:
     from src.agent.tools.registry import build_toolset
 
@@ -149,6 +150,7 @@ def open_agent(
         db_path=db_path,
         retriever=retriever,
         severity_classifier=severity_classifier,
+        evidence_connection=evidence_connection,
         runtime=runtime,
         session_id=session_id,
         thread_id=thread_id,

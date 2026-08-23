@@ -325,6 +325,38 @@ class TestEscalationIsEvidenceDrivenNotOnlyGateDriven:
         answer = self._assemble(prose, self.MISSING_SOURCE)
         assert answer.prose == prose
 
+    def test_a_conflict_from_an_earlier_turn_does_not_escalate_again(self):
+        """A blocking conflict is a fact about the turn that found it.
+
+        Conflicts stay in the transcript, so reading the whole conversation
+        drafted a fresh escalation on every later turn - including "what else
+        can you do", which had nothing to do with the order. Three turns in, a
+        chat about one stale order had raised three escalations.
+        """
+        from src.agent.answer import assemble
+
+        class Extractor:
+            def extract(self, _prose):
+                return []
+
+        earlier = self._messages("Yes, no fee applies.", self.MISSING_SOURCE)
+        # A later question, asked after the conflict was already on file.
+        messages = [*earlier, {"role": "user", "content": "what else can you do?"}]
+        answer = assemble(
+            "I can look things up for you.",
+            messages=messages,
+            principal=to_principal(get_persona("maya_agent")),
+            thread_id="t1",
+            question="what else can you do?",
+            extractor=Extractor(),
+            subject="what else can you do",
+        )
+        assert answer.escalation is None
+
+    def test_the_turn_that_finds_it_still_escalates(self):
+        # The scoping must not switch the signal off entirely.
+        assert self._assemble("No clause covers this.", self.MISSING_SOURCE).escalation is not None
+
     def test_an_advisory_conflict_does_not_draft_a_record(self):
         advisory = {
             "blocking": False,

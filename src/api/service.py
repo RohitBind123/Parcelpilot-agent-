@@ -44,6 +44,9 @@ class AgentService:
     checkpoint_path: Path
     db_path: Path
     action_secret: str
+    #: Where evidence handles live. A file, and shared across the runs of one
+    #: conversation - see `_open` for why that is not a widening.
+    evidence_path: Path = Path("data/evidence.db")
     retriever: Any | None = None
     extractor: Any | None = None
     severity_classifier: Any | None = None
@@ -51,6 +54,7 @@ class AgentService:
     #: `asyncio` holds only a weak reference to a task, and a run that
     #: disappears halfway leaves a stream waiting for events nobody will emit.
     _tasks: set[asyncio.Task] = field(default_factory=set, repr=False)
+    _evidence_connection: Any = field(default=None, repr=False)
 
     @classmethod
     def build(cls, **overrides: Any) -> AgentService:
@@ -85,6 +89,9 @@ class AgentService:
             task.cancel()
         with suppress(Exception):
             self.store.close()
+        if self._evidence_connection is not None:
+            with suppress(Exception):
+                self._evidence_connection.close()
 
     # -- runs ---------------------------------------------------------------
 
@@ -163,7 +170,24 @@ class AgentService:
             self.store.set_run_status(run_id, "failed")
             self.bus.emit(run_id, "run.failed", {"error": f"{type(exc).__name__}: {exc}"})
 
-    def _open(self, principal: Principal, session_id: str, thread_id: str, run_id: str):
+    def _evidence(self) -> Any:
+        """One connection, reused. Runs execute off the event loop, hence
+        `check_same_thread=False`."""
+        import sqlite3
+
+        if self._evidence_connection is None:
+            self.evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            self._evidence_connection = sqlite3.connect(self.evidence_path, check_same_thread=False)
+        return self._evidence_connection
+
+    def _open(self, principal: Principal, session_id: str, thread_id: str, _run_id: str):
+        """An agent for one turn of one conversation.
+
+        `_run_id` is unused and kept in the signature deliberately: callers
+        have one and passing it reads correctly, but evidence is scoped by
+        thread (see below), so binding it here would silently re-narrow the
+        scope this method exists to widen.
+        """
         return open_agent(
             principal,
             provider=self.provider_factory(),
@@ -172,7 +196,21 @@ class AgentService:
             retriever=self.retriever,
             severity_classifier=self.severity_classifier,
             extractor=self.extractor,
-            run_id=run_id,
+            # Evidence is scoped to the **conversation**, not to one message.
+            #
+            # A multi-turn exchange is one investigation: a resolution minted
+            # answering "can I cancel ORD-1001?" is legitimately readable when
+            # the same person asks a follow-up in the same thread. Scoping it
+            # per message meant the second turn could not read the first turn's
+            # handles at all, so the fact block lost its Governing and
+            # Overridden rows and a true claim about the override became
+            # unsupported - the answer was then dropped and escalated.
+            #
+            # This is not a widening. `EvidenceStore.read` also checks the
+            # principal fingerprint, so another account's session cannot read
+            # these handles however it names its thread.
+            run_id=thread_id,
+            evidence_connection=self._evidence(),
             runtime=self.store,
             session_id=session_id,
             thread_id=thread_id,
