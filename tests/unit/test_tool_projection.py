@@ -181,12 +181,21 @@ class TestThreeGenuinelyDifferentSchemas:
         added = schema_names("maya_agent") - schema_names("northstar_customer")
         assert added == {"query_tickets", "my_queue", "sla_first_response_status"}
 
-    def test_a_manager_adds_credit_approval_and_nothing_else_yet(self, names):
-        # M8 landed `approve_credit`, so the two staff schemas now genuinely
-        # differ - which is the point of it being a separate tool rather than
-        # a `kind` string. The detection pair is still M10.
-        assert names("priya_manager") - names("maya_agent") == {"approve_credit"}
-        assert {"scan_support_health", "explain_finding"} <= set(UNIMPLEMENTED)
+    def test_a_manager_adds_credit_approval_and_the_ops_detection_pair(self, names):
+        # The full matrix is built as of M10, so this is now the finished
+        # difference between the two staff roles rather than a snapshot of what
+        # had landed.
+        assert names("priya_manager") - names("maya_agent") == {
+            "approve_credit",
+            "scan_support_health",
+            "explain_finding",
+        }
+
+    def test_nothing_in_the_matrix_is_unbuilt(self):
+        # `UNIMPLEMENTED` earned its keep by letting "absent from Maya's
+        # schema" be a claim about a tool that existed for somebody. It is
+        # empty now, and an entry reappearing means a row went backwards.
+        assert UNIMPLEMENTED == {}
 
     def test_an_agent_has_no_credit_approval_to_be_talked_into(self, names):
         # The containment claim from the registry docstring, asserted.

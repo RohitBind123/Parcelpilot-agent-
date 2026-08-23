@@ -69,7 +69,9 @@ TOOLS = [
 #: Entries whose acceptance needs a milestone that has not landed. Named
 #: individually so the list is a to-do rather than a shrug.
 NOT_YET_COMPUTABLE = {
-    "GS-031": "ops detection; needs scan_support_health (M10)",
+    # M10 built `scan_support_health`, so this is computable now. The assertion
+    # belongs with the rest of the evaluation work in M11 rather than here.
+    "GS-031": "ops detection; tool built in M10, asserted with the eval layer (M11)",
 }
 
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Final
 
-from src.agent.tools import actions, authority, calculations, structured
+from src.agent.tools import actions, authority, calculations, detection, structured
 from src.agent.tools.base import Tool
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -56,10 +56,8 @@ PROJECTION: Final[dict[str, frozenset[str]]] = {
 #: Named individually with the milestone that adds each, so the gap is a to-do
 #: rather than a shrug - and so a reviewer can tell "not built" from "not
 #: allowed" by reading one dict.
-UNIMPLEMENTED: Final[dict[str, str]] = {
-    "scan_support_health": "proactive detection (M10)",
-    "explain_finding": "proactive detection (M10)",
-}
+#: Nothing. Every row of the projection matrix is built.
+UNIMPLEMENTED: Final[dict[str, str]] = {}
 
 _BUILDERS: Final[dict[str, Callable[[ToolContext], Tool]]] = {
     "search_policy": authority.search_policy,
@@ -76,6 +74,8 @@ _BUILDERS: Final[dict[str, Callable[[ToolContext], Tool]]] = {
     "prepare_action": actions.prepare_action,
     "execute_action": actions.execute_action,
     "approve_credit": actions.approve_credit,
+    "scan_support_health": detection.scan_support_health,
+    "explain_finding": detection.explain_finding,
 }
 
 #: Built into the toolset but withheld from the schema the model is shown.

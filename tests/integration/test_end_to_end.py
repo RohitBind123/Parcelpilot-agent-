@@ -481,9 +481,12 @@ class TestTheToolLayerOverTheSamePipeline:
             _session(pipeline, "priya_manager") as manager,
         ):
             names = (set(customer), set(agent), set(manager))
-        assert names[0] < names[1] <= names[2]
+        # Three genuinely different schemas, and now strictly increasing at
+        # both steps: M10 gave the manager tools the agent does not have.
+        assert names[0] < names[1] < names[2]
         assert "my_queue" not in names[0]
-        assert "scan_support_health" not in names[2]  # M10 builds it
+        assert "scan_support_health" in names[2]
+        assert "scan_support_health" not in names[1]
 
 
 @contextmanager

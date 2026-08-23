@@ -28,7 +28,7 @@ Verified facts: [`docs/01_DATA_PACK_FINDINGS.md`](../docs/01_DATA_PACK_FINDINGS.
 - [x] M7  Fact-block composition + claim-level grounding gate
 - [x] M8  FastAPI + SSE + confirmation gate
 - [x] M9  Streamlit client: threads, trace panel, conflict badge, confirm card, resume
-- [ ] M10 Ops page + proactive detection
+- [x] M10 Ops page + proactive detection
 - [ ] M11 Evaluation: pytest invariants, golden set, RAGAS
 - [ ] M12 Docs, demo video, Railway deploy
 
@@ -1075,6 +1075,111 @@ Also: the fact block's Caution row was a paragraph with a parenthetical
 provenance note buried mid-sentence. Split into Caution, What to do, and
 Inferred link - the last is an A3 disclosure and was the easiest thing on the
 page to skip.
+
+
+---
+
+## M10 — Ops page + proactive detection — complete
+
+**Goal (build order §21):** `GET /ops/findings` returns the five expected
+findings; drill-down works in chat. Unblocks GS-031, the last golden entry.
+
+**Ground truth:** ARCHITECTURE §14, and the derived table in findings §9.
+
+### One implementation, two surfaces
+
+The ops page and the chat drill-down call the same `scan_support_health`. A
+second code path for "the same question asked in a different place" is how the
+page and the chat end up disagreeing, and the disagreement is always found by a
+customer rather than by us.
+
+### Why not clustering — settled in §14, restated because it is the design
+
+Seven tickets. Embedding clustering is unstable and spike detection is
+meaningless at that n. The primary signal is matching tickets against the Known
+Issues document: stable at low volume, explainable, and it ties Problem 1 back
+to the corpus. A cluster labelled by a known issue is actionable; an unlabelled
+one is not.
+
+### 10.1 The scanner
+- [x] `src/domain/detection.py` — `Signal`, `Finding`, `ScanReport`, `HealthScanner`
+- [x] Deterministic `finding_id` so a drill-down can name one across requests
+- [x] Ranked: unmet-and-past-target P1 first, then recurrence, then the rest
+
+### 10.2 The signals (§14 table)
+- [x] Known-issue recurrence — ticket → KI entry, counted per issue
+- [x] First-response-target risk — elapsed vs target, `measurable: false` always
+- [x] Severity concentration — derived severity by account and plan
+- [x] Cross-account impact — same KI on ≥2 accounts. **Returns nothing on this
+      pack, and says so.** Manufacturing one would be data augmentation.
+- [x] Unmatched high severity — P1 with no matching KI → possible new incident
+- [x] Historical contradiction — a Tier 5 resolution against current Tier 1-3
+- [x] Volume spike — suppressed at n=7, with the reason stated rather than the
+      signal quietly omitted
+
+### 10.3 Tools
+- [x] `scan_support_health` and `explain_finding`, manager-only, leaving
+      `UNIMPLEMENTED` empty
+- [x] `explain_finding` takes a finding id and returns its evidence chain
+
+### 10.4 API and page
+- [x] `GET /ops/findings`, `GET /ops/findings/{id}` — staff only, 404 for a
+      customer in the same words as a missing record
+- [x] Ops page in the client, visible only when the role carries the scope
+- [x] "Ask about this" seeds a chat message, so the drill-down is one click
+
+### 10.5 Close out
+- [x] GS-031 computable; `NOT_YET_COMPUTABLE` reaches zero
+- [x] The five expected findings asserted by test, in order
+- [x] Suite green, lint clean
+
+### Verified live
+
+`GET /ops/findings` against the running server:
+
+    priya_manager      HTTP 200, 8 findings
+    maya_agent         HTTP 404
+    northstar_customer HTTP 404
+
+    [P1] first_response_risk      TKT-505 is 120 minutes past its 30 minutes, 24x7 target
+    [P1] first_response_risk      TKT-501 is 15 minutes past its 15 minutes, 24x7 target
+    [P1] unmatched_high_severity  TKT-501 is P1 with no matching known issue
+    [P1] unmatched_high_severity  TKT-505 is P1 with no matching known issue
+    [P2] known_issue_recurrence   TKT-502 matches KI-208 (second occurrence)
+    [P3] known_issue_recurrence   TKT-504 matches KI-211
+    [--] historical_contradiction TKT-450, TKT-451 — context only
+
+The two accounts past target are ACCT-004 and ACCT-001, which is GS-031's
+expected answer. The 404 for a support agent and a customer is the same message
+a missing record gets: "you may not" and "there is none" must not be
+distinguishable from outside.
+
+### Bugs found while building it
+
+- **The matcher attributed a total outage to the bulk-upload issue.** TKT-501
+  and KI-208 share the words "shipment" and "creation" - both ordinary English,
+  neither distinguishing anything. Issues are now identified by their curated
+  **title** and extracted params rather than their body prose, and a match
+  carries the words that decided it, because "why is this ticket attributed to
+  KI-208?" is the first question an operator asks.
+- **That false match made cross-account impact fire**, which §14 predicts must
+  find nothing on this pack. Fixing the matcher fixed the false positive; the
+  signal now reports "checked, nothing found" rather than being absent.
+- **The committed database was stale against the reviewed params baseline.**
+  KI-176 is `Resolved` in `clause_params_baseline.yaml` and was `{}` in the DB,
+  so a resolved issue was still eligible to match a live ticket. Rebuilt with
+  `build_db.py`.
+- **Recurrence counted only open tickets**, which hides the recurrence. TKT-502
+  is the *second* occurrence of KI-208 and the first (TKT-451) is closed.
+
+### Prompt rewrite (v2.0)
+
+Restructured into XML-tagged sections with a 4-phase loop, an explicit
+zero-trust hierarchy for tool and ticket text, and hard/soft constraint splits.
+The existing prompt tests caught two regressions in the rewrite: wording that
+mentioned "refusal" and "permission", which implies the access boundary is the
+model's cooperation. Reworded rather than the tests loosened - the absence is
+the design.
 
 
 ---
