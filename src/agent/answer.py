@@ -44,6 +44,32 @@ _DECLINE_FOR = {
 }
 
 
+#: A blocking conflict class, and what it means a human has to settle.
+_ESCALATE_FOR = {
+    "missing_source": DeclineReason.NO_CITABLE_SOURCE,
+    "unresolved_same_tier": DeclineReason.UNRESOLVED_CONFLICT,
+}
+
+
+def _blocking_gap(report: Mapping[str, Any] | None) -> DeclineReason | None:
+    """Why this run needs a person, from the consistency report (D19).
+
+    Blocking conflicts only. An advisory one is context the answer can carry;
+    a blocking one means the records the answer rests on disagree, or nothing
+    citable governs the question - and both are somebody's job, whatever the
+    prose ended up saying.
+    """
+    if not report or not report.get("blocking"):
+        return None
+    for conflict in report.get("conflicts", ()) or ():
+        if conflict.get("severity") != "blocking":
+            continue
+        return _ESCALATE_FOR.get(
+            str(conflict.get("conflict_class")), DeclineReason.UNRESOLVED_CONFLICT
+        )
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class Answer:
     block: FactBlock
@@ -130,23 +156,31 @@ def assemble(
     sources = evidence["sources"]
 
     gate = ground(prose, block=block, sources=sources, extractor=extractor)
-    if gate.verdict is Verdict.PASSED:
-        return Answer(block=block, prose=prose, gate=gate)
 
-    return Answer(
-        block=block,
-        prose="",
-        gate=gate,
-        escalation=draft(
+    def record(reason: DeclineReason) -> Escalation:
+        return draft(
             principal=principal,
             thread_id=thread_id,
             question=question,
-            reason=_DECLINE_FOR[gate.verdict],
+            reason=reason,
             subject=subject,
             evidence_chain=tuple(_handles(messages)),
             sources_consulted=tuple(sources),
-        ),
-    )
+        )
+
+    if gate.verdict is Verdict.PASSED:
+        gap = _blocking_gap(evidence.get("conflicts"))
+        if gap is None:
+            return Answer(block=block, prose=prose, gate=gate)
+        # The prose is sound and the situation still needs a person. These are
+        # separate questions and were briefly the same one: escalation used to
+        # be triggered by the gate failing, so a *correct* answer saying "no
+        # clause covers this" stopped drafting the record that D27 exists to
+        # produce. The gate judges the prose; the evidence decides whether a
+        # human is needed. The answer is delivered either way.
+        return Answer(block=block, prose=prose, gate=gate, escalation=record(gap))
+
+    return Answer(block=block, prose="", gate=gate, escalation=record(_DECLINE_FOR[gate.verdict]))
 
 
 def repair_queries(gate: GateOutcome, attempted: Sequence[str]) -> list[str]:

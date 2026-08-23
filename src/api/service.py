@@ -180,20 +180,34 @@ class AgentService:
 
     # -- reads --------------------------------------------------------------
 
-    def transcript(self, principal: Principal, thread_id: str) -> list[dict[str, Any]]:
-        """The conversation, as a client should see it.
+    def transcript(self, _principal: Principal, thread_id: str) -> list[dict[str, Any]]:
+        """The conversation as it was delivered.
 
-        Tool traffic and the system prompt are dropped: the first is the trace
-        panel's business and reaches the client as events, and the second is
-        not something a person said.
+        Rebuilt from the run log and the `token.delta` events, **not** from the
+        checkpointer. The checkpointer holds the model's draft, and the draft
+        is not always what the person was shown: when the grounding gate
+        declines, the prose is dropped and an escalation summary is delivered
+        in its place (D16, M7).
+
+        Reading the transcript from the checkpointer therefore handed back the
+        exact text the gate had refused, one page-load later - the gate held
+        live and evaporated on refresh. The event log is the record of what was
+        actually shown, so it is the honest source for this.
+
+        Tool traffic never appears here. It is the trace panel's business and
+        reaches the client as its own events.
         """
-        with self._open(principal, "replay", thread_id, "replay") as agent:
-            history = agent.history(thread_id)
-        return [
-            {"role": message["role"], "content": message.get("content") or ""}
-            for message in history
-            if message.get("role") in {"user", "assistant"} and message.get("content")
-        ]
+        messages: list[dict[str, Any]] = []
+        for run in self.store.runs_for_thread(thread_id):
+            messages.append({"role": "user", "content": run.question})
+            delivered = "".join(
+                str(event.payload.get("text", ""))
+                for event in self.store.events_since(run.run_id, from_seq=0)
+                if event.event == "token.delta"
+            )
+            if delivered:
+                messages.append({"role": "assistant", "content": delivered})
+        return messages
 
     def provider_names(self) -> dict[str, str]:
         settings = get_settings()

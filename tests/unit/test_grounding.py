@@ -246,9 +246,31 @@ class TestClaimsMustMapToEvidence:
         assert outcome.verdict is Verdict.UNCHECKED
         assert outcome.verdict is not Verdict.PASSED
 
-    def test_an_extractor_returning_nothing_is_also_not_a_pass(self, block):
-        outcome = ground("Some prose.", block=block, sources=SOURCES, extractor=StubExtractor())
-        assert outcome.verdict is Verdict.UNCHECKED
+    def test_an_answer_that_asserts_nothing_has_nothing_to_ground(self, block):
+        """A successful extraction of zero claims is a pass, not an outage.
+
+        This test asserted UNCHECKED until a greeting escalated to a human in
+        the browser. The two states it was conflating are now separated at the
+        boundary: `_to_claims` raises when the extractor fails, so reaching
+        here with an empty list means the answer genuinely asserted nothing
+        about policies or records.
+        """
+        outcome = ground(
+            "Hello, how can I help?", block=block, sources=SOURCES, extractor=StubExtractor()
+        )
+        assert outcome.verdict is Verdict.PASSED
+        assert outcome.claims == ()
+
+    def test_asserting_nothing_still_fails_on_an_invented_figure(self, block):
+        # A number the sources do not contain is an assertion however the
+        # sentence around it is phrased, so the figure check is not skipped.
+        outcome = ground(
+            "I can help with lots of things, about 9999 of them.",
+            block=block,
+            sources=SOURCES,
+            extractor=StubExtractor(),
+        )
+        assert outcome.verdict is Verdict.FAILED
 
 
 class TestSufficiencyIsStructural:
@@ -266,10 +288,24 @@ class TestSufficiencyIsStructural:
         )
         assert outcome.verdict is Verdict.NO_BASIS
 
-    def test_no_basis_is_decided_before_the_extractor_is_consulted(self):
-        extractor = StubExtractor("anything")
-        ground("prose", block=compose(), sources={}, extractor=extractor)
-        assert extractor.seen == []
+    def test_no_basis_needs_a_claim_to_have_no_basis_for(self):
+        """The extractor now runs first, and the ordering had to invert.
+
+        Deciding NO_BASIS on "nothing was retrieved" alone cannot tell an
+        answer that needed a source and has none from an answer that needed no
+        source. The first must be declined; the second is a greeting. So the
+        question "does this answer assert anything?" is asked before the
+        question "is there anything to assert it against?".
+        """
+        extractor = StubExtractor("the retention period is seven years")
+        outcome = ground("prose", block=compose(), sources={}, extractor=extractor)
+        assert outcome.verdict is Verdict.NO_BASIS
+        assert extractor.seen == ["prose"]
+
+    def test_an_answer_with_no_claims_and_no_evidence_is_not_declined(self):
+        # A greeting in a conversation that touched no tool at all.
+        outcome = ground("Hello.", block=compose(), sources={}, extractor=StubExtractor())
+        assert outcome.verdict is Verdict.PASSED
 
     def test_a_block_with_a_governing_clause_has_a_basis(self, block):
         outcome = ground(
@@ -335,10 +371,17 @@ class TestUnquotedFigures:
 
 
 class TestTheLlmExtractorBoundary:
-    """`_to_claims` is where a provider response becomes claims. Every path out
-    of it that is not a clean list must be empty, because the gate reads an
-    empty extraction as UNCHECKED - so a broken extractor stops an answer
-    instead of waving it through."""
+    """`_to_claims` is where a provider response becomes claims.
+
+    It must distinguish two things that used to look identical. An unusable
+    response *raises*, so a broken extractor stops an answer. A well-formed
+    empty list *returns empty*, so an answer that asserts nothing about
+    policies or records is not treated as an extractor failure.
+
+    Collapsing those two into "return []" is what made "tell me what you can
+    do" escalate to a human: the gate could not tell an answer with nothing to
+    ground from a gate that had failed to ground it.
+    """
 
     @pytest.fixture
     def to_claims(self):
@@ -356,8 +399,16 @@ class TestTheLlmExtractorBoundary:
         assert to_claims('{"claims": ["a"]}') == ["a"]
 
     @pytest.mark.parametrize("raw", ["not json", {"other": []}, None, [], {"claims": None}])
-    def test_anything_unusable_is_empty_which_the_gate_reads_as_unchecked(self, to_claims, raw):
-        assert to_claims(raw) == []
+    def test_anything_unusable_raises_rather_than_looking_like_silence(self, to_claims, raw):
+        from src.agent.claims_llm import ExtractionError
+
+        # `ground` catches this and returns UNCHECKED, which is not a pass.
+        with pytest.raises(ExtractionError):
+            to_claims(raw)
+
+    def test_a_well_formed_empty_list_is_not_an_error(self, to_claims):
+        # The extractor saying "this answer asserts nothing" is a real answer.
+        assert to_claims({"claims": []}) == []
 
     def test_blank_claims_are_dropped(self, to_claims):
         assert to_claims({"claims": ["real", "  ", ""]}) == ["real"]
@@ -373,8 +424,15 @@ class TestTheLlmExtractorBoundary:
 
         assert "not to conclude" in _SYSTEM or "warns against" in _SYSTEM
 
-    def test_an_empty_extraction_does_not_pass_the_gate(self, block):
-        outcome = ground("Some prose.", block=block, sources=SOURCES, extractor=StubExtractor())
+    def test_a_broken_extractor_still_does_not_pass_the_gate(self, block):
+        # The property the old empty-is-unchecked rule was protecting, kept -
+        # now carried by the exception rather than by the empty list.
+        outcome = ground(
+            "Some prose.",
+            block=block,
+            sources=SOURCES,
+            extractor=StubExtractor(raises=RuntimeError("bad response")),
+        )
         assert outcome.verdict is Verdict.UNCHECKED
 
 

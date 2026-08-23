@@ -960,6 +960,65 @@ cannot see. Excluding it to tidy the number would have been the dishonest fix.
 
 ---
 
+## Interlude — the gate escalated a greeting (after M9)
+
+Found from a screenshot of the running UI, not from a test. Asking "tell me
+what you can do" produced *"I do not have a source that settles this"* and an
+`unsupported_claim` escalation. Pulling that thread found three faults, each
+hiding the next.
+
+### 1. The extractor could not say "nothing to ground" — complete
+
+`_to_claims` returned `[]` for a malformed provider response **and** for a
+well-formed empty extraction, and the gate read the empty list as UNCHECKED.
+"The extractor broke" and "the answer asserts nothing about policies or
+records" are opposite facts - the first must stop an answer, the second must
+let a greeting through - and returning `[]` for both made them one fact.
+
+Malformed responses now raise. An empty list means the extractor succeeded and
+found nothing, so a greeting passes and a broken extractor still does not.
+
+### 2. The gate asked its questions in the wrong order — complete
+
+`if block.is_empty and not sources: return NO_BASIS` ran before the extractor,
+so an answer that needed no source was treated identically to one that needed a
+source and had none. The extractor now runs first: "does this answer assert
+anything?" is asked before "is there anything to assert it against?".
+
+### 3. Escalation was triggered by the gate failing — complete
+
+Fixing 1 and 2 exposed this. TKT-503's billing-contact question - the case
+ARCHITECTURE 13 names as the live demo - started passing the gate, because the
+answer *"there is no citable clause covering this"* is correct. And passing
+suppressed the escalation, so being right stopped the record from being drafted.
+
+Escalation is now driven by the evidence as well: a **blocking** conflict from
+`check_data_consistency` (D19) drafts a record whatever the prose said, and the
+answer is still delivered. The gate judges the prose; the evidence decides
+whether a person is needed. Those were briefly the same question.
+
+### 4. The gate evaporated on a page refresh — complete
+
+The worst of the four, and unrelated to the screenshot. `GET
+/threads/{id}/messages` read the checkpointer, which holds the model's *draft*.
+When the gate declines, the draft is dropped and an escalation summary is
+delivered instead - so the transcript handed back the exact prose the gate had
+refused, one page-load later. Every M7 guarantee held live and lasted until F5.
+
+The transcript is now rebuilt from the run log and the `token.delta` events,
+which are the record of what was actually shown. Confirmed as a real regression
+test by reverting the fix and watching it fail.
+
+### Verified
+
+1332 tests, lint clean. Live against Gemini: "hii" and "tell me what you can
+do" both pass with 0 claims and no escalation; TKT-503 still declines and still
+drafts a record; a declined answer's transcript shows the escalation, not the
+draft.
+
+
+---
+
 ## Review
 
 _To be filled in as milestones complete._

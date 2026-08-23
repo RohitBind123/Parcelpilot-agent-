@@ -39,13 +39,19 @@ _SCHEMA: Final[dict[str, Any]] = {
 }
 
 _SYSTEM: Final = (
-    "You split a support answer into the atomic factual claims it asserts. "
+    "You split a support answer into the atomic factual claims it asserts "
+    "about ParcelPilot's policies, records, or the customer's account. "
     "Include only what the text states as fact in its own voice. "
     "A conditional, a hedge, an instruction, a question, and a report of what "
     "someone else said are not claims - and a sentence telling the reader NOT "
     "to conclude something asserts the opposite of that thing, so do not list "
     "the thing it warns against. Keep each claim to one assertion, in the "
-    "text's own words as far as possible, and resolve pronouns."
+    "text's own words as far as possible, and resolve pronouns.\n\n"
+    "Statements about the assistant itself are not claims of this kind: a "
+    "greeting, an offer to help, and a description of what the assistant can "
+    "do assert nothing about policies or records, and there is no clause that "
+    "could support or contradict them. Return an empty list for an answer that "
+    "makes no assertion about ParcelPilot's policies, records or accounts."
 )
 
 
@@ -68,22 +74,30 @@ class LlmClaimExtractor:
         return _to_claims(raw)
 
 
-def _to_claims(raw: Any) -> list[str]:
-    """Whatever came back, as a list of claims or as nothing.
+class ExtractionError(RuntimeError):
+    """The extractor answered with something that is not an extraction."""
 
-    Returning [] on a malformed response is safe here and only here: the gate
-    reads an empty extraction as UNCHECKED, never as a pass, so a broken
-    extractor stops an answer rather than waving it through.
+
+def _to_claims(raw: Any) -> list[str]:
+    """Whatever came back, as a list of claims.
+
+    Raises rather than returning [] when the response is unusable, and that
+    distinction is the whole point of this function. "The extractor broke" and
+    "the answer asserts nothing about policies or records" are different facts
+    with opposite consequences - the first must stop an answer, the second must
+    let a greeting through - and returning [] for both made them the same fact.
+
+    They were the same fact for a while, and the symptom was that "tell me what
+    you can do" escalated to a human: the gate had no way to tell an answer with
+    nothing to ground from an extractor that had failed to ground it.
     """
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("claim extractor returned text that is not JSON")
-            return []
+        except json.JSONDecodeError as exc:
+            raise ExtractionError("claim extractor returned text that is not JSON") from exc
     try:
         claims = [str(c).strip() for c in raw["claims"] if str(c).strip()]
     except (KeyError, TypeError) as exc:
-        logger.warning("claim extractor response was unusable: %s", exc)
-        return []
+        raise ExtractionError(f"claim extractor response was unusable: {exc}") from exc
     return claims[:MAX_CLAIMS]

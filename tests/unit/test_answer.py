@@ -10,6 +10,7 @@ than a wrong number.
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 
 import pytest
 
@@ -256,3 +257,94 @@ class TestTheAnswerShape:
         assert isinstance(answer, Answer)
         with pytest.raises((AttributeError, TypeError)):
             answer.prose = "something else"
+
+
+class TestEscalationIsEvidenceDrivenNotOnlyGateDriven:
+    """A correct answer can still be somebody's job.
+
+    Escalation used to fire only when the gate declined, which made "the prose
+    is unsupported" and "this needs a person" the same condition. They are not:
+    TKT-503's billing-contact question produces a *correct* answer - "no clause
+    covers this" - and D27 still requires a drafted record. Tying the record to
+    the gate meant the answer being right suppressed it.
+    """
+
+    MISSING_SOURCE: ClassVar[dict] = {
+        "blocking": True,
+        "conflicts": [
+            {
+                "conflict_class": "missing_source",
+                "severity": "blocking",
+                "detail": "no citable clause covers 'account_contact' for this account",
+            }
+        ],
+    }
+
+    def _messages(self, prose: str, conflicts: dict) -> list[dict]:
+        import json as _json
+
+        return [
+            {"role": "user", "content": "how do I change the billing contact?"},
+            {
+                "role": "tool",
+                "name": "check_data_consistency",
+                "tool_call_id": "c1",
+                "content": _json.dumps(conflicts),
+            },
+            {"role": "assistant", "content": prose},
+        ]
+
+    def _assemble(self, prose: str, conflicts: dict, claims=()):
+        from src.agent.answer import assemble
+        from src.auth.personas import get_persona, to_principal
+
+        class Extractor:
+            def extract(self, _prose):
+                return list(claims)
+
+        return assemble(
+            prose,
+            messages=self._messages(prose, conflicts),
+            principal=to_principal(get_persona("maya_agent")),
+            thread_id="t1",
+            question="how do I change the billing contact?",
+            extractor=Extractor(),
+            subject="changing the billing contact",
+        )
+
+    def test_a_blocking_gap_drafts_a_record_even_when_the_gate_passes(self):
+        answer = self._assemble("There is no citable clause covering this.", self.MISSING_SOURCE)
+        assert answer.gate.verdict is Verdict.PASSED
+        assert answer.escalation is not None
+        assert answer.escalation.reason is DeclineReason.NO_CITABLE_SOURCE
+
+    def test_the_answer_is_still_delivered(self):
+        # The person gets the honest answer; a human gets the record. Dropping
+        # the prose here would punish the model for being right.
+        prose = "There is no citable clause covering this."
+        answer = self._assemble(prose, self.MISSING_SOURCE)
+        assert answer.prose == prose
+
+    def test_an_advisory_conflict_does_not_draft_a_record(self):
+        advisory = {
+            "blocking": False,
+            "conflicts": [
+                {"conflict_class": "stale_status", "severity": "advisory", "detail": "x"}
+            ],
+        }
+        assert self._assemble("All fine.", advisory).escalation is None
+
+    def test_no_conflicts_means_no_record(self):
+        assert self._assemble("All fine.", {"blocking": False, "conflicts": []}).escalation is None
+
+    def test_an_unrecognised_blocking_class_still_escalates(self):
+        # A new conflict class must not silently stop being somebody's job.
+        unknown = {
+            "blocking": True,
+            "conflicts": [
+                {"conflict_class": "something_new", "severity": "blocking", "detail": "x"}
+            ],
+        }
+        answer = self._assemble("All fine.", unknown)
+        assert answer.escalation is not None
+        assert answer.escalation.reason is DeclineReason.UNRESOLVED_CONFLICT

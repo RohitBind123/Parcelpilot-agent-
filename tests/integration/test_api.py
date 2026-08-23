@@ -416,6 +416,143 @@ class TestTheConfirmationGate:
         assert service.store.actions_for_thread("t1") == ()
 
 
+class TestTheTranscriptIsWhatWasDelivered:
+    """The gate has to survive a page reload.
+
+    `GET /threads/{id}/messages` used to read the checkpointer, which holds the
+    model's draft. When the grounding gate declines, the draft is dropped and
+    an escalation summary is delivered instead - so the transcript handed back
+    the exact prose the gate had refused, one page-load later. The gate held
+    live and evaporated on refresh.
+    """
+
+    async def test_the_transcript_matches_the_streamed_answer(self, client, script):
+        script[:] = [say("The cancellation fee is waived under your agreement.")]
+        token = await login(client)
+        run = (
+            await client.post("/threads/t1/messages", json={"text": "fee?"}, headers=auth(token))
+        ).json()["data"]["run_id"]
+        streamed = "".join(
+            d["text"] for d in named(await events_for(client, token, run), "token.delta")
+        )
+
+        transcript = (await client.get("/threads/t1/messages", headers=auth(token))).json()["data"]
+        assistant = [m for m in transcript if m["role"] == "assistant"]
+        assert [m["content"] for m in assistant] == [streamed]
+
+    async def test_the_question_is_the_one_that_was_asked(self, client):
+        token = await login(client)
+        run = (
+            await client.post(
+                "/threads/t1/messages", json={"text": "where is ORD-1001?"}, headers=auth(token)
+            )
+        ).json()["data"]["run_id"]
+        await events_for(client, token, run)
+        transcript = (await client.get("/threads/t1/messages", headers=auth(token))).json()["data"]
+        assert transcript[0] == {"role": "user", "content": "where is ORD-1001?"}
+
+    async def test_turns_come_back_in_order(self, client, script):
+        script[:] = [say("First answer."), say("Second answer.")]
+        token = await login(client)
+        for text in ("one", "two"):
+            run = (
+                await client.post("/threads/t1/messages", json={"text": text}, headers=auth(token))
+            ).json()["data"]["run_id"]
+            await events_for(client, token, run)
+        transcript = (await client.get("/threads/t1/messages", headers=auth(token))).json()["data"]
+        assert [m["content"] for m in transcript] == [
+            "one",
+            "First answer.",
+            "two",
+            "Second answer.",
+        ]
+
+    async def test_no_tool_traffic_leaks_into_the_transcript(self, client, script):
+        script[:] = [call("get_order", order_id="ORD-1001"), say("It is booked.")]
+        token = await login(client)
+        run = (
+            await client.post("/threads/t1/messages", json={"text": "status?"}, headers=auth(token))
+        ).json()["data"]["run_id"]
+        await events_for(client, token, run)
+        transcript = (await client.get("/threads/t1/messages", headers=auth(token))).json()["data"]
+        assert {m["role"] for m in transcript} == {"user", "assistant"}
+        assert not any("evidence" in m["content"] for m in transcript)
+
+
+class TestADeclinedAnswerStaysDeclined:
+    """The regression, asserted directly rather than transitively.
+
+    A gate that drops prose live and hands it back on the next page load has
+    not dropped it. This drives a run whose draft the gate refuses, and checks
+    the refused sentence is nowhere in the transcript.
+    """
+
+    DRAFT = "Your cancellation fee is waived and a refund lands in three days."
+
+    @pytest.fixture
+    def graded(self, tmp_path, script):
+        """A service whose gate rejects everything it is given."""
+
+        class RejectingExtractor:
+            def extract(self, prose):
+                # One claim, worded so nothing in the corpus could support it.
+                return ["a refund lands in three days"]
+
+        store = RuntimeStore.open(tmp_path / "graded.db")
+        built = AgentService(
+            store=store,
+            bus=RunBus(store),
+            sessions=SessionManager(store, secret=SECRET),
+            provider_factory=lambda: ScriptedProvider(script),
+            checkpoint_path=tmp_path / "graded-threads.db",
+            db_path=get_settings().db_path,
+            action_secret=SECRET,
+            extractor=RejectingExtractor(),
+        )
+        yield built
+        built.close()
+
+    @pytest.fixture
+    async def graded_client(self, graded):
+        app = create_app(graded)
+        graded.bus.bind_loop(asyncio.get_running_loop())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as opened:
+            yield opened
+
+    async def test_the_gate_declines_the_draft(self, graded_client, script):
+        script[:] = [call("get_order", order_id="ORD-1001"), say(self.DRAFT)]
+        token = await login(graded_client)
+        run = (
+            await graded_client.post(
+                "/threads/t1/messages", json={"text": "fee?"}, headers=auth(token)
+            )
+        ).json()["data"]["run_id"]
+        seen = await events_for(graded_client, token, run)
+        assert named(seen, "run.escalated")
+        delivered = "".join(d["text"] for d in named(seen, "token.delta"))
+        assert self.DRAFT not in delivered
+
+    async def test_the_refused_draft_is_absent_from_the_transcript(self, graded_client, script):
+        script[:] = [call("get_order", order_id="ORD-1001"), say(self.DRAFT)]
+        token = await login(graded_client)
+        run = (
+            await graded_client.post(
+                "/threads/t1/messages", json={"text": "fee?"}, headers=auth(token)
+            )
+        ).json()["data"]["run_id"]
+        await events_for(graded_client, token, run)
+
+        transcript = (await graded_client.get("/threads/t1/messages", headers=auth(token))).json()[
+            "data"
+        ]
+        # The whole point. Reading this from the checkpointer returned the
+        # draft, so the gate's decision lasted exactly until a refresh.
+        assert self.DRAFT not in json.dumps(transcript)
+        assert any("do not have a source" in m["content"] for m in transcript)
+
+
 class TestResumeFlow:
     async def test_active_run_is_null_when_nothing_is_running(self, client):
         token = await login(client)
