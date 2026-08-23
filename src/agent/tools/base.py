@@ -114,7 +114,39 @@ class ToolDenied:
         }
 
 
-Outcome = ToolResult | ToolError | ToolDenied
+@dataclass(frozen=True, slots=True)
+class ToolPending:
+    """An action prepared and waiting for a human (ARCHITECTURE 13).
+
+    Two audiences, and they must not receive the same thing. `to_payload` is
+    what goes back into the conversation, and it carries the preview and the
+    fact that something is waiting. The `token` field is for the client, over
+    the interrupt event.
+
+    That split is the gate. A model holding the token can confirm on the
+    human's behalf, at which point the confirmation step is theatre - so the
+    token is never rendered into model context, and a test asserts it.
+    """
+
+    #: The `PendingAction`. Typed loosely so this module stays free of domain
+    #: imports; the graph and the tools both know the concrete type.
+    pending: Any
+    #: The HMAC. Goes to the client, never into `to_payload`.
+    token: str = field(repr=False)
+
+    def to_payload(self) -> dict[str, Any]:
+        preview = self.pending.to_preview()
+        return {
+            "awaiting_confirmation": True,
+            "message": (
+                "prepared and waiting for the person to confirm. Do not describe this as "
+                "done, and do not prepare it again - say what will happen if they confirm."
+            ),
+            "preview": preview,
+        }
+
+
+Outcome = ToolResult | ToolError | ToolDenied | ToolPending
 
 #: What a tool body returns. Denials and prerequisite errors are values it
 #: constructs; anything raised is a fault, not an answer.
@@ -152,6 +184,15 @@ class Tool:
     #: Scope the Principal must hold. Advisory here - the real enforcement is
     #: that an unauthorised tool is never built (see `registry.py`).
     requires_scope: str | None = field(default=None, compare=False)
+    #: Arguments the runtime supplies and the model never sees. Accepted by
+    #: `__call__`, absent from `to_schema`.
+    #:
+    #: `execute_action` needs this: the pending action it performs comes from
+    #: graph state, and the whole gate rests on the model having no way to
+    #: supply one. Declaring it as a `Param` would put it in a schema and
+    #: describe a `PendingAction` as though it were a JSON scalar; leaving it
+    #: undeclared would have `__call__` reject the graph's own call.
+    injected: frozenset[str] = field(default_factory=frozenset, compare=False)
 
     def to_schema(self) -> dict[str, Any]:
         return {
@@ -169,14 +210,14 @@ class Tool:
         }
 
     def __call__(self, **arguments: Any) -> Outcome:
-        known = {p.name for p in self.params}
+        known = {p.name for p in self.params} | self.injected
         unknown = sorted(set(arguments) - known)
         if unknown:
             # Dropping one runs a different query from the one that was asked
             # for, which on an ACL-adjacent read is the wrong way to fail.
             return ToolError(
                 f"unknown argument(s) {unknown} for {self.name}; "
-                f"expected a subset of {sorted(known)}"
+                f"expected a subset of {sorted(p.name for p in self.params)}"
             )
 
         missing = [p for p in self.params if p.required and p.name not in arguments]

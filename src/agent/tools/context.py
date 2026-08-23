@@ -41,6 +41,19 @@ class ToolContext:
     #: default: a deployment with no model reachable must still page for an
     #: outage, and it does, because the guards do not go through here.
     severity_classifier: Any | None = None
+    #: Where executed actions are appended. Absent means the confirmation gate
+    #: is not available, which is the right default for a unit test of a
+    #: calculator - and is why the gate tools check it rather than assume it.
+    runtime: Any | None = None
+    #: Bound into every confirmation token, so a token minted for one session
+    #: cannot authorise an action in another.
+    session_id: str = "session"
+    #: The conversation an action belongs to, and what the audit row is keyed
+    #: by. Not taken from the model: it is the thread the run is already in.
+    thread_id: str = "default"
+    #: Signs confirmation tokens. Separate from the session secret so that
+    #: rotating one does not silently invalidate the other.
+    action_secret: str = ""
 
     def close(self) -> None:
         self.repository.close()
@@ -56,6 +69,10 @@ def open_tool_context(
     retriever: Any | None = None,
     severity_classifier: Any | None = None,
     evidence_connection: sqlite3.Connection | None = None,
+    runtime: Any | None = None,
+    session_id: str = "session",
+    thread_id: str = "default",
+    action_secret: str | None = None,
 ) -> Iterator[ToolContext]:
     path = Path(db_path or get_settings().db_path)
     repository = open_repository(principal, path)
@@ -71,6 +88,10 @@ def open_tool_context(
         resolver=PolicyResolver(repository.connection),
         retriever=retriever,
         severity_classifier=severity_classifier,
+        runtime=runtime,
+        session_id=session_id,
+        thread_id=thread_id,
+        action_secret=action_secret or get_settings().session_secret,
     )
     try:
         yield context

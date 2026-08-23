@@ -20,7 +20,14 @@ from __future__ import annotations
 import pytest
 
 from src.agent.tools.context import open_tool_context
-from src.agent.tools.registry import PROJECTION, UNIMPLEMENTED, build_toolset, tool_names
+from src.agent.tools.registry import (
+    MODEL_INVISIBLE,
+    PROJECTION,
+    UNIMPLEMENTED,
+    build_toolset,
+    to_schemas,
+    tool_names,
+)
 from src.auth.personas import PERSONAS, get_persona, to_principal
 from src.auth.principal import (
     SCOPE_APPROVE_CREDIT,
@@ -60,7 +67,21 @@ def toolset():
 
 @pytest.fixture
 def names(toolset):
+    """Tools built for this persona. What exists, not what the model is told."""
     return lambda persona_id: tool_names(toolset(persona_id))
+
+
+@pytest.fixture
+def schema_names(toolset):
+    """Tool names in the schema the model actually receives.
+
+    Narrower than `names` by `MODEL_INVISIBLE`. The two are separate fixtures
+    because the difference is a design decision worth being able to assert:
+    a tool can exist, be scoped, and still have no name the model can utter.
+    """
+    return lambda persona_id: {
+        schema["function"]["name"] for schema in to_schemas(toolset(persona_id))
+    }
 
 
 class TestTheMatrixMatchesTheArchitecture:
@@ -121,8 +142,8 @@ class TestTheMatrixMatchesTheArchitecture:
 
 
 class TestThreeGenuinelyDifferentSchemas:
-    def test_a_customer_gets_the_narrowest_set(self, names):
-        assert names("northstar_customer") == {
+    def test_a_customer_gets_the_narrowest_set(self, schema_names):
+        assert schema_names("northstar_customer") == {
             "search_policy",
             "get_order",
             "get_ticket",
@@ -131,18 +152,47 @@ class TestThreeGenuinelyDifferentSchemas:
             "compute_cancellation_fee",
             "compute_service_credit",
             "check_data_consistency",
+            # Proposing is allowed to everyone; nothing happens without a
+            # human confirming, and `execute_action` is withheld from the
+            # schema entirely (MODEL_INVISIBLE).
+            "prepare_action",
         }
 
-    def test_an_agent_adds_the_staff_reads(self, names):
-        added = names("maya_agent") - names("northstar_customer")
+    def test_the_model_is_never_shown_execute_action(self, names, schema_names):
+        """Built, scoped, and nameless to the model.
+
+        `execute_action` is driven by the graph after a human confirms, with
+        the token the client sent. If the model could name it, it could try to
+        perform an action without one - so the containment argument that keeps
+        `approve_credit` out of Maya's schema applies here one level further
+        in. It stays a real tool so it is still subject to the matrix.
+        """
+        for persona_id in ("northstar_customer", "maya_agent", "priya_manager"):
+            assert "execute_action" in names(persona_id)
+            assert "execute_action" not in schema_names(persona_id)
+
+    def test_nothing_else_is_hidden_from_the_model(self, names, schema_names):
+        # A growing invisible set would quietly become a second, undocumented
+        # projection. One entry, and it has to be that one.
+        assert {"execute_action"} == MODEL_INVISIBLE
+        assert names("priya_manager") - schema_names("priya_manager") == MODEL_INVISIBLE
+
+    def test_an_agent_adds_the_staff_reads(self, schema_names):
+        added = schema_names("maya_agent") - schema_names("northstar_customer")
         assert added == {"query_tickets", "my_queue", "sla_first_response_status"}
 
-    def test_a_manager_today_differs_from_an_agent_only_by_unbuilt_tools(self, names):
-        # The detection tools land in M10 and approve_credit in M8. Until then
-        # the two staff schemas coincide - and the matrix above is what will
-        # fail if either lands without its scope.
-        assert names("priya_manager") == names("maya_agent")
-        assert {"scan_support_health", "explain_finding", "approve_credit"} <= set(UNIMPLEMENTED)
+    def test_a_manager_adds_credit_approval_and_nothing_else_yet(self, names):
+        # M8 landed `approve_credit`, so the two staff schemas now genuinely
+        # differ - which is the point of it being a separate tool rather than
+        # a `kind` string. The detection pair is still M10.
+        assert names("priya_manager") - names("maya_agent") == {"approve_credit"}
+        assert {"scan_support_health", "explain_finding"} <= set(UNIMPLEMENTED)
+
+    def test_an_agent_has_no_credit_approval_to_be_talked_into(self, names):
+        # The containment claim from the registry docstring, asserted.
+        # `test_action_tools.py` covers the other half: `prepare_action`
+        # refuses `kind="approve_credit"`, so the string is not a way round it.
+        assert "approve_credit" not in names("maya_agent")
 
     def test_all_four_customers_get_the_same_schema(self, names):
         assert len({frozenset(names(c)) for c in CUSTOMERS}) == 1
