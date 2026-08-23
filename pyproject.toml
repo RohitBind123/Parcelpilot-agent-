@@ -5,7 +5,7 @@
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "app", "scripts", "tests"]
+src = ["src", "ui", "scripts", "tests"]
 # Ruff 0.16 formats Python inside Markdown fences. The docs use hand-aligned
 # snippets and ASCII diagrams that are illustrative, not compilable, so they
 # are excluded rather than silently rewritten.
@@ -30,7 +30,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["src", "app"]
+known-first-party = ["src", "ui"]
 
 [tool.ruff.lint.per-file-ignores]
 # The clock is the one module allowed to name the forbidden functions, in a
@@ -45,7 +45,9 @@ testpaths = ["tests"]
 # CLAUDE.md documents. Without it every plain `pytest` hits real providers
 # and fails outright on a machine with no API keys. An explicit `-m live`
 # on the command line overrides it.
-addopts = "-q --strict-markers --strict-config -m 'not live'"
+# `ui` joins `live` in the default exclusion: a plain `pytest` must not need a
+# browser installed or two servers running.
+addopts = "-q --strict-markers --strict-config -m 'not live and not ui'"
 # Async tests and async fixtures without a marker on each one. The API tests
 # are all async, and in strict mode an unmarked async *fixture* is not an
 # error - it is silently handed to a sync test, which is worse.
@@ -54,6 +56,7 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     "live: hits a real provider or Chroma Cloud; deselected by default (-m 'not live')",
     "eval: golden-set or RAGAS run; slow and LLM-judged",
+    "ui: drives the Streamlit client in Chromium; needs a browser and two servers",
 ]
 filterwarnings = ["error::DeprecationWarning:src.*"]
 
