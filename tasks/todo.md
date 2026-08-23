@@ -1184,6 +1184,68 @@ the design.
 
 ---
 
+## Interlude — three bugs behind one symptom (after M10)
+
+Reported as "why is it giving the same response": a conversation about
+ORD-1001 answered correctly, and then every follow-up - "what else can you
+do", "are you hallucinating" - came back as the same canned escalation.
+Debugging it from the event log found three separate faults stacked on top of
+each other.
+
+### 1. A numbered list was read as unsupported figures — complete
+
+`unquoted_figures` pulled `1.`, `2.`, `3.` out of a markdown list as
+quantities with no unit. None of them are in the fact block, so the gate
+failed the answer with zero claims extracted. Nothing about this was specific
+to capability questions: a domain answer that enumerated three findings would
+have been rejected for its own bullet numbers. Ordered-list markers are
+stripped before figures are read.
+
+### 2. The extractor treated self-description as a domain claim — complete
+
+Asked "are you hallucinating", the model explains how it works, and the
+extractor listed "all figures are calculated from system records" as an
+assertion needing a clause. No clause could ever support it. The prompt now
+carries worked examples of what not to extract, which steers an extraction far
+more reliably than the abstract rule that was there.
+
+### 3. Evidence did not survive the turn — complete, and the real one
+
+The other two were noise on top of this. `AgentService` opened a fresh
+**in-memory** evidence store with a new `run_id` per message, and
+`EvidenceStore.read` scopes by run. So the second turn in a thread could not
+read the first turn's handles *at all*: `_last_resolution` silently returned
+None, the fact block lost its Governing and Overridden rows, and a true claim
+about the override - "the contract overrides the standard fee in SOP v4 §1" -
+had nothing to be supported by.
+
+Evidence is now scoped to the **conversation**, over a file. Not a widening:
+`read` also checks the principal fingerprint, so another account cannot reach
+these handles however it names its thread. A test asserts both halves - a
+later turn can read an earlier turn's handle, another thread cannot.
+
+### 4. A stale conflict escalated forever — complete
+
+Found while verifying the above. Conflicts persist in the transcript, so the
+blocking ORD-1001 conflict drafted a fresh escalation on every later turn.
+Three turns in, a chat about one stale order had raised three escalations. The
+evidence-driven escalation now reads only the current turn; grounding still
+reads the whole conversation, because a claim supported by a clause fetched two
+turns ago is still supported.
+
+### Verified
+
+The reported conversation, live against Gemini:
+
+    Can I cancel ORD-1001 without a fee?   passed, 8 claims, escalated (correct)
+    okay what other things you can do      passed, 0 claims, no escalation
+    are you hallucinating                  passed, 4 claims, no escalation
+
+1399 tests, lint clean.
+
+
+---
+
 ## Review
 
 _To be filled in as milestones complete._

@@ -418,6 +418,22 @@ class TestTheLlmExtractorBoundary:
 
         assert len(to_claims({"claims": [f"c{i}" for i in range(100)]})) == MAX_CLAIMS
 
+    def test_the_prompt_shows_what_not_to_extract(self):
+        """Self-description is not a claim about the corpus.
+
+        Asked "are you hallucinating?", the model explains how it works, and
+        the extractor read "all figures are calculated from system records"
+        as an assertion needing a clause. No clause could ever support it, so
+        the answer escalated. The prompt now carries worked examples, which
+        steer an extraction far more reliably than an abstract rule.
+        """
+        from src.agent.claims_llm import _SYSTEM
+
+        assert "Do NOT extract" in _SYSTEM
+        assert "DO extract" in _SYSTEM
+        # The exact shape that failed, given verbatim.
+        assert "calculated from system records" in _SYSTEM
+
     def test_the_prompt_tells_the_model_a_prohibition_is_not_a_claim(self):
         # The linguistic judgement the gate depends on, asked for explicitly.
         from src.agent.claims_llm import _SYSTEM
@@ -434,6 +450,47 @@ class TestTheLlmExtractorBoundary:
             extractor=StubExtractor(raises=RuntimeError("bad response")),
         )
         assert outcome.verdict is Verdict.UNCHECKED
+
+
+class TestLayoutIsNotAClaim:
+    """Markdown structure is not an assertion.
+
+    A numbered list was read as one unsupported figure per item, so any answer
+    that enumerated its points failed the gate. It was found on a capability
+    answer - "1. Order lookups 2. Cancellation ..." - but nothing about the
+    bug was specific to those: a domain answer listing three findings would
+    have been rejected for its own bullet numbers.
+    """
+
+    LISTED = (
+        "Here is what I can help with:\n\n"
+        "1. **Order lookups** - the status of any shipment.\n"
+        "2. **Cancellation** - whether an order can be cancelled.\n"
+        "3. **Credits** - whether a delay qualifies.\n"
+    )
+
+    def test_ordered_list_markers_are_not_figures(self):
+        assert unquoted_figures(self.LISTED) == set()
+
+    def test_a_bracketed_marker_is_also_layout(self):
+        assert unquoted_figures("1) first\n2) second\n") == set()
+
+    def test_a_two_digit_marker_is_layout(self):
+        assert unquoted_figures("10. tenth item\n") == set()
+
+    def test_real_figures_in_a_list_are_still_read(self):
+        # Only the marker is layout. What the item says is still a claim.
+        found = unquoted_figures("1. The fee is INR 250.\n2. The window is 30 minutes.\n")
+        assert found == {(250.0, "inr"), (30.0, "minutes")}
+
+    def test_a_number_mid_sentence_is_not_treated_as_a_marker(self):
+        # The marker rule is anchored to the start of a line, so an ordinary
+        # sentence beginning with a figure keeps it.
+        assert (250.0, "inr") in unquoted_figures("The charge is INR 250. It applies after.")
+
+    def test_a_listed_answer_passes_the_gate(self, block):
+        outcome = ground(self.LISTED, block=block, sources=SOURCES, extractor=StubExtractor())
+        assert outcome.verdict is Verdict.PASSED
 
 
 class TestIdentifiersAreNotQuantities:

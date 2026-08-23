@@ -94,6 +94,18 @@ class Answer:
         }
 
 
+def this_turn(messages: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[str, Any]]:
+    """The messages since the person last spoke.
+
+    A turn is what happened in response to one question. Anything earlier is
+    context the answer may draw on, but it is not something this turn found.
+    """
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index].get("role") == "user":
+            return messages[index:]
+    return messages
+
+
 def evidence_from(messages: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """What the tools returned, read back out of the conversation.
 
@@ -169,7 +181,13 @@ def assemble(
         )
 
     if gate.verdict is Verdict.PASSED:
-        gap = _blocking_gap(evidence.get("conflicts"))
+        # From this turn's evidence, not the conversation's. Conflicts persist
+        # in the transcript, so a blocking one found while answering about an
+        # order would otherwise draft a fresh escalation on every later turn -
+        # including "what else can you do", which has nothing to do with it.
+        # Grounding still reads the whole conversation: a claim supported by a
+        # clause fetched two turns ago is still supported.
+        gap = _blocking_gap(evidence_from(this_turn(messages)).get("conflicts"))
         if gap is None:
             return Answer(block=block, prose=prose, gate=gate)
         # The prose is sound and the situation still needs a person. These are

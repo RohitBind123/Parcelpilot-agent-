@@ -47,11 +47,26 @@ _SYSTEM: Final = (
     "to conclude something asserts the opposite of that thing, so do not list "
     "the thing it warns against. Keep each claim to one assertion, in the "
     "text's own words as far as possible, and resolve pronouns.\n\n"
-    "Statements about the assistant itself are not claims of this kind: a "
-    "greeting, an offer to help, and a description of what the assistant can "
-    "do assert nothing about policies or records, and there is no clause that "
-    "could support or contradict them. Return an empty list for an answer that "
-    "makes no assertion about ParcelPilot's policies, records or accounts."
+    "Statements about the assistant itself are NOT claims of this kind. A "
+    "greeting, an offer to help, a description of what the assistant can do, "
+    "and an explanation of how it works all assert nothing about policies or "
+    "records - no clause could support or contradict them, so listing one is "
+    "an error.\n\n"
+    "Do NOT extract, even when they mention a record by name:\n"
+    '  "I can look up orders, check cancellation eligibility, and calculate '
+    'service credits."\n'
+    '  "All figures I report are calculated from system records rather than '
+    'written by me."\n'
+    '  "The conflict was identified by an automated check comparing ORD-1001 '
+    'and TKT-504."\n'
+    '  "Hello - how can I help with your shipments today?"\n\n'
+    "DO extract, because each states something about the world the sources "
+    "describe:\n"
+    '  "ORD-1001 can be cancelled with no fee."\n'
+    '  "Your agreement waives the cancellation fee."\n'
+    '  "The first-response target is four business hours."\n\n'
+    "Return an empty list for an answer that makes no assertion about "
+    "ParcelPilot's policies, records or accounts."
 )
 
 

@@ -557,6 +557,74 @@ class TestADeclinedAnswerStaysDeclined:
         assert any("do not have a source" in m["content"] for m in transcript)
 
 
+class TestEvidenceSurvivesTheTurn:
+    """A conversation is one investigation, not a series of strangers.
+
+    Evidence was scoped per message-run over an in-memory store, so the second
+    turn in a thread could not read the first turn's handles at all. The fact
+    block silently lost its Governing and Overridden rows, a true claim about
+    the override became unsupported, and the answer was dropped and escalated -
+    on a question as innocuous as "are you hallucinating".
+    """
+
+    async def test_a_later_turn_can_read_an_earlier_turns_handle(self, client, script, service):
+        script[:] = [
+            call("get_order", order_id="ORD-1001"),
+            say("It is booked."),
+            say("Still booked."),
+        ]
+        token = await login(client)
+        first = (
+            await client.post("/threads/t1/messages", json={"text": "status?"}, headers=auth(token))
+        ).json()["data"]["run_id"]
+        seen = await events_for(client, token, first)
+        handle = next(
+            (d.get("evidence_id") for d in named(seen, "tool.finished") if d.get("evidence_id")),
+            None,
+        )
+        assert handle, "the first turn minted no evidence"
+
+        second = (
+            await client.post(
+                "/threads/t1/messages", json={"text": "and now?"}, headers=auth(token)
+            )
+        ).json()["data"]["run_id"]
+        await events_for(client, token, second)
+
+        # The store the second run was given must still hold the first's work.
+        with service._open((await _principal(client, token)), "sid", "t1", second) as agent:
+            assert agent.tool_context.store.kind_of(handle) is not None
+
+    async def test_another_thread_cannot_read_it(self, client, script, service):
+        # Scoping by conversation is not the same as no scoping.
+        script[:] = [call("get_order", order_id="ORD-1001"), say("Booked.")]
+        token = await login(client)
+        run = (
+            await client.post("/threads/a/messages", json={"text": "status?"}, headers=auth(token))
+        ).json()["data"]["run_id"]
+        seen = await events_for(client, token, run)
+        handle = next(
+            (d.get("evidence_id") for d in named(seen, "tool.finished") if d.get("evidence_id")),
+            None,
+        )
+        assert handle
+
+        from src.domain.evidence import EvidenceError
+
+        with (
+            service._open((await _principal(client, token)), "sid", "b", "r2") as agent,
+            pytest.raises(EvidenceError),
+        ):
+            agent.tool_context.store.kind_of(handle)
+
+
+async def _principal(client, token):
+    from src.auth.personas import get_persona, to_principal
+
+    body = (await client.get("/auth/me", headers=auth(token))).json()["data"]
+    return to_principal(get_persona(body["user_id"]))
+
+
 class TestResumeFlow:
     async def test_active_run_is_null_when_nothing_is_running(self, client):
         token = await login(client)

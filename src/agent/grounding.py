@@ -251,14 +251,26 @@ def check_figures(prose: str, block: FactBlock, sources: Mapping[str, str]) -> t
     return tuple(sorted(ungrounded, key=lambda f: (f[0], f[1] or "")))
 
 
+#: A markdown ordered-list marker: a small number at the start of a line,
+#: followed by a dot or bracket and a space.
+#:
+#: Stripped before figures are read, because "1." beginning a line is layout,
+#: not an assertion. Without this, any answer written as a numbered list is
+#: three or four unsupported figures and fails the gate - which it did, to a
+#: perfectly good capability answer, and would have done to a domain answer
+#: that happened to enumerate its points.
+_LIST_MARKER: Final = re.compile(r"^[ \t]{0,3}\d{1,2}[.)](?=\s)", re.MULTILINE)
+
+
 def unquoted_figures(prose: str) -> set[tuple[float, str | None]]:
     """Figures the model asserted in its own voice.
 
     Text inside quotation marks is a verbatim citation, and was checked when the
     clause entered the evidence set. Re-checking it here would flag an answer
-    for accurately quoting its source.
+    for accurately quoting its source. List markers are dropped for the same
+    reason in reverse: they were never a claim to begin with.
     """
-    return figures_in(_QUOTED.sub(" ", prose))
+    return figures_in(_LIST_MARKER.sub(" ", _QUOTED.sub(" ", prose)))
 
 
 # -- internals --------------------------------------------------------------
